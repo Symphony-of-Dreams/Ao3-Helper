@@ -53,23 +53,29 @@ If you prefer to run the application directly from the source code, you can do s
 
 1.  **Install Python:** Ensure you have Python 3.11 or newer installed.
 2.  **Clone the repository:**
+    ```
     bash
     git clone https://github.com/your-username/ao3-helper.git
     cd ao3-helper
+    ```
     
 3.  **Create a virtual environment:**
+    ```
     bash
     python -m venv venv
     venv\Scripts\activate  # On Windows
+    ```
     
 4.  **Install dependencies:**
+    ```
     bash
     pip install -r requirements.txt
     ```
 5.  **Run the application:**
+    ```
     bash
     python main.py
-    
+    ```
 
 ## Tech Stack
 
@@ -82,3 +88,4 @@ If you prefer to run the application directly from the source code, you can do s
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+

@@ -1,0 +1,70 @@
+# File .gitignore per AO3 Helper
+
+# ----------------------------------------------------------------
+# 1. File Specifici del Progetto (DA NON CONDIVIDERE MAI)
+# ----------------------------------------------------------------
+# Il database degli utenti. Contiene tutti i loro dati personali.
+ao3_helper.db
+ao3_helper.db-journal
+
+# Il file di configurazione locale. Può contenere il nome utente.
+config.ini
+
+# Il file di log generato dall'applicazione.
+ao3_helper.log
+
+# ----------------------------------------------------------------
+# 2. Artefatti di Build e Packaging (PyInstaller, Inno Setup)
+# ----------------------------------------------------------------
+# Cartelle di output di PyInstaller
+/build/
+/dist/
+
+# File di specifica di PyInstaller
+*.spec
+
+# Output di Inno Setup o altri installer
+/Output/
+/Release/
+/setup.exe
+
+# ----------------------------------------------------------------
+# 3. Cache e File Generati da Python
+# ----------------------------------------------------------------
+# Cartelle della cache di Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cache di Mypy e Pytest
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Ambienti virtuali Python
+.env
+.venv
+venv/
+ENV/
+env/
+
+# ----------------------------------------------------------------
+# 4. File di Configurazione di IDE e Editor
+# ----------------------------------------------------------------
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ----------------------------------------------------------------
+# 5. File Specifici del Sistema Operativo
+# ----------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini

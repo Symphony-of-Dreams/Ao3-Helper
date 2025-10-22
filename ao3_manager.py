@@ -1,8 +1,10 @@
 import re
 import time
+from datetime import datetime  # noqa: F401
 from typing import Any, Dict, List, Optional
 
 import AO3
+from AO3 import requester
 from AO3.utils import workid_from_url
 
 import constants as const
@@ -10,12 +12,18 @@ import security_manager
 from config_manager import config_manager
 from logger_setup import logger
 
+DEFAULT_REQUEST_DELAY = 2
+SYNC_REQUEST_DELAY = 1
+RATE_LIMIT_DELAY = 60
+
 
 class AO3Client:
     session: Optional[AO3.Session]
+    guest_requester: requester.Requester
 
     def __init__(self) -> None:
         self.session = self._create_session()
+        self.guest_requester = requester.Requester()
 
     def _create_session(self) -> Optional[AO3.Session]:
         """
@@ -55,8 +63,39 @@ class AO3Client:
         logger.debug(f"Attempting to fetch data for URL: {url}")
         try:
             work_id = int(url.split("/")[-1])
-            work = AO3.Work(work_id, session=self.session)
-            work.reload()
+            work = None
+
+            try:
+
+                logger.debug(f"Creating blank guest object for work ID {work_id}.")
+                guest_work = AO3.Work(work_id, load=False)
+
+                guest_work._requester = self.guest_requester
+                logger.debug(f"Attempting to load data as GUEST for work ID {work_id}.")
+                guest_work.reload()
+
+                work = guest_work
+
+            except Exception as guest_error:
+
+                logger.warning(f"Guest load failed for {work_id}. Error: {guest_error}")
+
+                if self.session:
+
+                    logger.info(f"Retrying to load work ID {work_id} as AUTHENTICATED.")
+                    try:
+                        work = AO3.Work(work_id, session=self.session)
+                    except Exception as auth_error:
+                        logger.error(f"Authenticated fetch also failed for {work_id}. Error: {auth_error}")
+
+                        return None
+                else:
+                    logger.error(f"Cannot access work ID {work_id}. It is likely locked, and no login is configured.")
+                    return None
+
+            if work is None or not hasattr(work, "title") or work.title is None:
+                logger.error(f"Failed to retrieve a valid Work object for ID {work_id}.")
+                return None
 
             nchapters = work.nchapters
             expected_chapters = work.expected_chapters
@@ -80,8 +119,6 @@ class AO3Client:
             bookmarks = work.bookmarks or 0
             comments = work.comments or 0
 
-            last_read_date = ""
-            visit_count = None
             source = "manual"
 
             fic_details = {
@@ -104,8 +141,6 @@ class AO3Client:
                 "date_published": date_published,
                 "date_updated": date_updated,
                 "source": source,
-                "last_read_date": last_read_date,
-                "visit_count": visit_count,
                 "language": language,
                 "hits": hits,
                 "kudos": kudos,
@@ -146,7 +181,7 @@ class AO3Client:
                 if not found_works_on_page:
                     logger.debug("No new works found on this page. Ending search.")
                     break
-                time.sleep(2)
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
             logger.info(f"Found {len(all_work_ids)} works in total for user {username}.")
             return all_work_ids
@@ -178,7 +213,7 @@ class AO3Client:
                 if not next_page or next_page.find("span", {"class": "disabled"}):
                     break
                 page += 1
-                time.sleep(1)
+                time.sleep(const.SYNC_REQUEST_DELAY)
         except Exception as e:
             logger.error(f"An error occurred while checking kudos: {e}")
         logger.info(f"Kudos not found for user '{username}' on work {work_id}.")
@@ -215,7 +250,7 @@ class AO3Client:
                             logger.info(f"Comment (in thread) found for user '{username}' on work {work_id}.")
                             return True
                 if work.nchapters > 1:
-                    time.sleep(1)
+                    time.sleep(const.SYNC_REQUEST_DELAY)
         except Exception:
             logger.exception(f"An error occurred while checking comments for work {work_id}")
         logger.info(f"Comment not found for user '{username}' on work {work_id}.")
@@ -266,7 +301,7 @@ class AO3Client:
                     logger.debug("No new works found on this page. Ending search.")
                     break
 
-                time.sleep(2)
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} bookmarks in total for user {username}.")
@@ -308,7 +343,7 @@ class AO3Client:
                     logger.debug("No new works found on this page. Ending search.")
                     break
 
-                time.sleep(2)
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} works in total for collection {collection_name}.")
@@ -359,7 +394,7 @@ class AO3Client:
                     logger.debug("No 'next page' link found. Ending search.")
                     break
 
-                time.sleep(2)
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} works in total for series {series_id}.")
@@ -373,5 +408,125 @@ class AO3Client:
             logger.exception(f"An unexpected error occurred while fetching works for series {series_id}")
             return {"error": "An unexpected error occurred while fetching the series."}
 
+    def get_history_from_user(self) -> List[Dict[str, Any]] | Dict[str, str]:
+        """
+        Recupera l'intera cronologia di lettura ("History") per l'utente loggato.
+        Richiede una sessione autenticata.
+        """
+        if not self.session:
+            logger.error("History fetch failed: user is not logged in.")
+            return {"error": "You must be logged in to fetch your reading history."}
+
+        username = self.session.username
+        logger.info(f"Fetching full reading history for user: {username}")
+
+        try:
+            page = 1
+            all_history_items = []
+
+            while True:
+                logger.debug(f"Fetching history from page {page} for user {username}")
+                history_url = f"https://archiveofourown.org/users/{username}/readings?page={page}"
+                page_soup = self.session.request(history_url)
+
+                history_list = page_soup.find("ol", class_="reading work index group")
+
+                if not history_list:
+                    logger.debug(
+                        f"Primary container ('ol.reading.work.index.group') not found on page {page}. Ending search."
+                    )
+                    break
+
+                work_items = history_list.select("li.reading.work.blurb.group")
+
+                if not work_items:
+                    logger.debug(
+                        f"Container found, but no work items found with CSS selector on page {page}. Ending search."
+                    )
+                    break
+
+                for item in work_items:
+
+                    header = item.find("h4", class_="heading")
+                    link = header.find("a") if header else None
+                    if not (link and "href" in link.attrs and "/works/" in link["href"]):
+                        continue
+
+                    work_id = workid_from_url(link["href"])
+
+                    visit_count = 0
+                    last_visit_date = ""
+
+                    viewed_heading = item.find("h4", class_="viewed heading")
+
+                    if viewed_heading:
+                        full_text = viewed_heading.get_text(strip=True)
+
+                        date_match = re.search(r"Last visited:.*?(\d{1,2}\s\w{3}\s\d{4})", full_text)
+                        if date_match:
+                            try:
+                                date_str = date_match.group(1).strip()
+                                date_obj = datetime.strptime(date_str, "%d %b %Y")
+                                last_visit_date = date_obj.strftime("%Y-%m-%d")
+                            except (ValueError, AttributeError):
+                                logger.warning(
+                                    f"Could not parse date for work {work_id} from string: '{date_match.group(1)}'"
+                                )
+                                pass
+
+                        times_match = re.search(r"Visited (\d+) times", full_text)
+                        if times_match:
+                            visit_count = int(times_match.group(1))
+
+                    all_history_items.append(
+                        {
+                            "work_id": work_id,
+                            "last_visit_date": last_visit_date,
+                            "visit_count": visit_count,
+                        }
+                    )
+
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
+                page += 1
+
+            logger.info(f"Found {len(all_history_items)} history entries in total for user {username}.")
+            return all_history_items
+
+        except Exception:
+            logger.exception(f"An unexpected error occurred while fetching history for {username}")
+            return {"error": "An unexpected error occurred while fetching your history."}
+
 
 ao3_client = AO3Client()
+
+
+def parse_ao3_url(url: str) -> tuple[str, str | None]:
+    """
+    Analyzes an AO3 URL and determines its type and identifier.
+
+    Returns:
+        A tuple containing (url_type, identifier).
+        url_type can be 'work', 'author', 'collection', 'series', or 'unknown'.
+        identifier is the extracted ID or name, or None.
+    """
+    work_match = re.search(r"/works/(\d+)", url)
+    if work_match:
+        return ("work", work_match.group(1))
+
+    author_works_match = re.search(r"/users/([^/]+)/works", url)
+    if author_works_match:
+        return ("author", author_works_match.group(1))
+
+    author_profile_match = re.search(r"/users/([^/]+)", url)
+    if author_profile_match:
+        return ("author", author_profile_match.group(1))
+
+    collection_match = re.search(r"/collections/([^/]+)", url)
+    if collection_match:
+        return ("collection", collection_match.group(1).split("/")[0])
+
+    series_match = re.search(r"/series/(\d+)", url)
+    if series_match:
+        return ("series", series_match.group(1))
+
+    return ("unknown", None)

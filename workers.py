@@ -1,7 +1,6 @@
-
 import sqlite3
 import time
-from typing import List, cast
+from typing import Any, Dict, List, cast
 
 import AO3
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -9,8 +8,88 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 import constants as const
 from ao3_manager import ao3_client
 from config_manager import config_manager
-from database import add_fic, get_existing_urls, update_fic_status
+from database import Fic, add_fic, add_or_update_fic_from_history, get_existing_urls, update_fic_status
 from logger_setup import logger
+
+
+class BaseImportWorker(QObject):
+    """
+    Abstract base class for workers that import a list of fics from AO3.
+    Handles the common logic of fetching existing URLs, iterating through
+    work IDs, fetching data, adding fics, and emitting progress signals.
+    """
+
+    finished = pyqtSignal()
+    progress = pyqtSignal(int, int)
+    new_fic_added = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, identifier: str) -> None:
+        super().__init__()
+        self.identifier = identifier
+        self._is_cancelled = False
+        self._is_paused = False
+
+    def pause(self) -> None:
+        logger.info("Pause requested for import worker.")
+        self._is_paused = True
+
+    def resume(self) -> None:
+        logger.info("Resume requested for import worker.")
+        self._is_paused = False
+
+    def _fetch_work_ids(self) -> List[int] | Dict[str, str]:
+        """
+        This method must be implemented by subclasses.
+        It should call the appropriate ao3_client method to get a list of work IDs.
+        """
+        raise NotImplementedError("Subclasses must implement _fetch_work_ids")
+
+    @pyqtSlot()
+    def run(self) -> None:
+        """The main execution loop for all import workers."""
+        logger.info(f"BaseImportWorker started for identifier: {self.identifier}")
+
+        result = self._fetch_work_ids()
+        if isinstance(result, dict) and "error" in result:
+            self.error.emit(result["error"])
+            self.finished.emit()
+            return
+
+        work_ids = cast(List[int], result)
+        total_works = len(work_ids)
+        logger.info(f"Found {total_works} works to process.")
+
+        existing_urls = get_existing_urls()
+
+        for i, work_id in enumerate(work_ids):
+            if self._is_cancelled:
+                logger.warning("Import worker was cancelled.")
+                break
+
+            while self._is_paused:
+                time.sleep(1)
+
+            self.progress.emit(i + 1, total_works)
+            fic_url = f"https://archiveofourown.org/works/{work_id}"
+
+            if fic_url in existing_urls:
+                continue
+
+            try:
+                data = ao3_client.fetch_fic_data(fic_url)
+                if data:
+                    add_fic(data)
+                    self.new_fic_added.emit()
+
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
+
+            except Exception:
+                logger.exception(f"An error occurred while importing work ID {work_id}")
+                continue
+
+        logger.info("BaseImportWorker finished its run.")
+        self.finished.emit()
 
 
 class AddFicWorker(QObject):
@@ -49,133 +128,158 @@ class UpdateCheckWorker(QObject):
                     update_fic_data(fic["url"], data)
                     self.new_notification.emit(f"New update for '{data['title']}'!", fic["url"])
                 self.progress.emit(i + 1, len(fics_to_check))
-                time.sleep(1)
+                time.sleep(const.SYNC_REQUEST_DELAY)
             except Exception as e:
                 logger.error(f"Error checking for updates on {fic['url']}: {e}")
         logger.info("Update check finished.")
         self.finished.emit()
 
 
-class MassImportWorker(QObject):
+class MassImportWorker(BaseImportWorker):
+    """Worker to import all works from a specific author."""
+
+    def _fetch_work_ids(self) -> List[int] | Dict[str, str]:
+        return ao3_client.get_work_ids_from_user(self.identifier)
+
+
+class ImportBookmarksWorker(BaseImportWorker):
+    """Worker to import all bookmarks from the logged-in user."""
+
+    def __init__(self) -> None:
+        super().__init__(identifier="user_bookmarks")
+
+    def _fetch_work_ids(self) -> List[int] | Dict[str, str]:
+        return ao3_client.get_bookmarks_from_user()
+
+
+class ImportHistoryWorker(QObject):
+    """
+    Worker to import the full reading history for the logged-in user.
+    This worker has a custom run loop to handle both creation and updates.
+    """
+
     finished = pyqtSignal()
     progress = pyqtSignal(int, int)
     new_fic_added = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, url_or_name: str) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.url_or_name = url_or_name
+        self._is_cancelled = False
+        self._is_paused = False
 
+    def pause(self) -> None:
+        logger.info("Pause requested for history import worker.")
+        self._is_paused = True
+
+    def resume(self) -> None:
+        logger.info("Resume requested for history import worker.")
+        self._is_paused = False
+
+    @pyqtSlot()
     def run(self) -> None:
-        existing_urls = get_existing_urls()
-        result = ao3_client.get_work_ids_from_user(self.url_or_name)
-        if isinstance(result, dict) and "error" in result:
-            self.error.emit(result["error"])
-            self.finished.emit()
-            return
-        work_ids = cast(List[int], result)
-        for i, work_id in enumerate(work_ids):
-            self.progress.emit(i + 1, len(work_ids))
-            fic_url = f"https://archiveofourown.org/works/{work_id}"
-            if fic_url in existing_urls:
-                continue
-            data = ao3_client.fetch_fic_data(fic_url)
-            if data:
-                add_fic(data)
-                self.new_fic_added.emit()
-            time.sleep(2)
-        self.finished.emit()
+        logger.info("ImportHistoryWorker started.")
 
+        full_import_done = config_manager.getboolean("Settings", "full_history_import_completed")
+        if full_import_done:
+            logger.info("Starting INCREMENTAL history sync.")
+        else:
+            logger.warning("Starting FULL history import. This may take a while.")
 
-class ImportBookmarksWorker(QObject):
-    finished = pyqtSignal()
-    progress = pyqtSignal(int, int)
-    new_fic_added = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def run(self) -> None:
-        result = ao3_client.get_bookmarks_from_user()
-        if isinstance(result, dict) and "error" in result:
-            self.error.emit(result["error"])
-            self.finished.emit()
-            return
-        work_ids = cast(List[int], result)
-        existing_urls = get_existing_urls()
-        for i, work_id in enumerate(work_ids):
-            self.progress.emit(i + 1, len(work_ids))
-            fic_url = f"https://archiveofourown.org/works/{work_id}"
-            if fic_url in existing_urls:
-                continue
-            data = ao3_client.fetch_fic_data(fic_url)
-            if data:
-                add_fic(data)
-                self.new_fic_added.emit()
-            time.sleep(2)
-        self.finished.emit()
-
-
-class ImportCollectionWorker(QObject):
-    finished = pyqtSignal()
-    progress = pyqtSignal(int, int)
-    new_fic_added = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def __init__(self, collection_name: str) -> None:
-        super().__init__()
-        self.collection_name = collection_name
-
-    def run(self) -> None:
-        existing_urls = get_existing_urls()
-        result = ao3_client.get_work_ids_from_collection(self.collection_name)
-        if isinstance(result, dict) and "error" in result:
-            self.error.emit(result["error"])
-            self.finished.emit()
-            return
-        work_ids = cast(List[int], result)
-        for i, work_id in enumerate(work_ids):
-            self.progress.emit(i + 1, len(work_ids))
-            fic_url = f"https://archiveofourown.org/works/{work_id}"
-            if fic_url in existing_urls:
-                continue
-            data = ao3_client.fetch_fic_data(fic_url)
-            if data:
-                add_fic(data)
-                self.new_fic_added.emit()
-            time.sleep(2)
-        self.finished.emit()
-
-
-class ImportSeriesWorker(QObject):
-    finished = pyqtSignal()
-    progress = pyqtSignal(int, int)
-    new_fic_added = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def __init__(self, series_id: str) -> None:
-        super().__init__()
-        self.series_id = series_id
-
-    def run(self) -> None:
-        existing_urls = get_existing_urls()
-        result = ao3_client.get_work_ids_from_series(self.series_id)
-
+        result = ao3_client.get_history_from_user()
         if isinstance(result, dict) and "error" in result:
             self.error.emit(result["error"])
             self.finished.emit()
             return
 
-        work_ids = cast(List[int], result)
-        for i, work_id in enumerate(work_ids):
-            self.progress.emit(i + 1, len(work_ids))
+        history_items = cast(List[Dict[str, Any]], result)
+        total_items = len(history_items)
+
+        existing_urls = get_existing_urls()
+
+        import_completed_successfully = True
+
+        for i, item in enumerate(history_items):
+
+            if self._is_cancelled:
+                import_completed_successfully = False
+                break
+
+            while self._is_paused:
+                time.sleep(1)
+
+            work_id = item.get("work_id")
             fic_url = f"https://archiveofourown.org/works/{work_id}"
-            if fic_url in existing_urls:
+
+            if full_import_done and fic_url in existing_urls:
+
+                fic_in_db = Fic.get_or_none(Fic.url == fic_url)
+                if fic_in_db and fic_in_db.is_in_history:
+
+                    if fic_in_db.last_visit_date == item.get("last_visit_date") and fic_in_db.visit_count == item.get(
+                        "visit_count"
+                    ):
+                        logger.info(f"Incremental sync complete. Reached unchanged fic: {fic_url}")
+                        break
+
+            self.progress.emit(i + 1, total_items)
+
+            try:
+
+                if fic_url in existing_urls:
+
+                    logger.debug(f"Work {work_id} already exists. Updating history data only.")
+                    query = Fic.update(
+                        is_in_history=True,
+                        last_visit_date=item.get("last_visit_date"),
+                        visit_count=item.get("visit_count"),
+                    ).where(Fic.url == fic_url)
+                    query.execute()
+                    self.new_fic_added.emit()
+                else:
+
+                    logger.debug(f"Work {work_id} is new. Fetching full metadata.")
+                    data = ao3_client.fetch_fic_data(fic_url)
+                    if data:
+
+                        data["last_visit_date"] = item.get("last_visit_date")
+                        data["visit_count"] = item.get("visit_count")
+                        created, _ = add_or_update_fic_from_history(data)
+                        if created:
+                            self.new_fic_added.emit()
+
+                            existing_urls.add(fic_url)
+
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
+
+            except Exception:
+                logger.exception(f"An error occurred while importing history for work ID {work_id}")
+                import_completed_successfully = False
                 continue
-            data = ao3_client.fetch_fic_data(fic_url)
-            if data:
-                add_fic(data)
-                self.new_fic_added.emit()
-            time.sleep(2)
+
+        if not full_import_done and import_completed_successfully:
+            logger.info("Full history import completed successfully! Flag set to 'true'.")
+            config_manager.set("Settings", "full_history_import_completed", "true")
+            config_manager.save_config()
+        elif not import_completed_successfully:
+            logger.warning("History import did not complete successfully. The 'full import' flag remains 'false'.")
+
+        logger.info("ImportHistoryWorker finished its run.")
         self.finished.emit()
+
+
+class ImportCollectionWorker(BaseImportWorker):
+    """Worker to import all works from a specific collection."""
+
+    def _fetch_work_ids(self) -> List[int] | Dict[str, str]:
+        return ao3_client.get_work_ids_from_collection(self.identifier)
+
+
+class ImportSeriesWorker(BaseImportWorker):
+    """Worker to import all works from a specific series."""
+
+    def _fetch_work_ids(self) -> List[int] | Dict[str, str]:
+        return ao3_client.get_work_ids_from_series(self.identifier)
 
 
 class SyncStatusWorker(QObject):
@@ -189,7 +293,7 @@ class SyncStatusWorker(QObject):
     def run(self) -> None:
         try:
             has_commented = ao3_client.check_comment(self.work_id, self.username)
-            time.sleep(1)
+            time.sleep(const.SYNC_REQUEST_DELAY)
             has_kudosed = ao3_client.check_kudos(self.work_id, self.username)
             new_status = (
                 const.STATUS_COMMENTED if has_commented else const.STATUS_KUDOSED if has_kudosed else const.STATUS_READ
@@ -260,15 +364,13 @@ class TotalSyncWorker(QObject):
             try:
                 work_id = int(fic["url"].split("/")[-1])
 
-
-                time.sleep(3)
+                time.sleep(const.FAST_SYNC_DELAY)
 
                 has_commented = ao3_client.check_comment(work_id, username)
 
-                time.sleep(3)
+                time.sleep(const.FAST_SYNC_DELAY)
 
                 has_kudosed = ao3_client.check_kudos(work_id, username)
-
 
                 new_status = fic["status"]
                 if has_commented:
@@ -289,7 +391,7 @@ class TotalSyncWorker(QObject):
             except AO3.utils.HTTPError as e:
                 logger.warning(f"Rate-limit hit while checking {fic['url']}. Pausing for 60 seconds. Details: {e}")
                 self.status_update.emit("Rate-limit detected. Pausing for 60 seconds...")
-                time.sleep(60)
+                time.sleep(const.RATE_LIMIT_DELAY)
                 continue
 
             except Exception as e:

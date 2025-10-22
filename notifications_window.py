@@ -26,7 +26,7 @@ class NotificationsWindow(QDialog):
             for notification in self.notifications:
                 message = f"{notification['message']}\n(received on {notification['timestamp']})"
                 item = QListWidgetItem(message)
-                item.setData(Qt.ItemDataRole.UserRole, notification["related_url"])
+                item.setData(Qt.ItemDataRole.UserRole, notification.get("related_url"))
                 self.notification_list.addItem(item)
 
         layout.addWidget(self.notification_list)

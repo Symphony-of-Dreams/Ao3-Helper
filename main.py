@@ -1,10 +1,10 @@
 import os
-import re
 import shutil
 import sqlite3
 import sys
 import webbrowser
 from datetime import datetime
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import (
@@ -19,10 +19,11 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QIcon, QTextCursor
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -47,7 +48,7 @@ from PyQt6.QtWidgets import (
 
 import constants as const
 from achievements_window import AchievementsWindow
-from ao3_manager import ao3_client
+from ao3_manager import ao3_client, parse_ao3_url
 from bulk_edit_dialog import BulkEditDialog
 from config_manager import config_manager
 from database import (
@@ -86,6 +87,7 @@ from workers import (
     AddFicWorker,
     ImportBookmarksWorker,
     ImportCollectionWorker,
+    ImportHistoryWorker,
     ImportSeriesWorker,
     MassImportWorker,
     SyncStatusWorker,
@@ -204,6 +206,9 @@ class MainWindow(QMainWindow):
     total_sync_thread: Optional[QThread] = None
     total_sync_worker: Optional[TotalSyncWorker] = None
     bulk_edit_dialog: Optional[BulkEditDialog] = None
+    update_worker: Optional[UpdateCheckWorker]
+    import_worker: Optional[MassImportWorker]
+    sync_worker: Optional[SyncStatusWorker]
 
     def __init__(self) -> None:
         super().__init__()
@@ -214,14 +219,23 @@ class MainWindow(QMainWindow):
         self.add_fic_thread: Optional[QThread] = None
         self.worker: Optional[AddFicWorker] = None
         self.update_thread: Optional[QThread] = None
+        self.update_worker = None
         self.import_thread: Optional[QThread] = None
+        self.import_worker = None
         self.sync_thread: Optional[QThread] = None
-        self.bookmarks_import_thread, self.bookmarks_import_worker = None, None
+        self.sync_worker = None
+        self.bookmarks_import_thread = None
+        self.bookmarks_import_worker: Optional[ImportBookmarksWorker] = None
+        self.history_import_thread: Optional[QThread] = None
+        self.history_import_worker: Optional[ImportHistoryWorker] = None
         self.selected_url: Optional[str] = None
+        self.collection_import_thread: Optional[QThread] = None
         self.collection_import_worker: Optional[ImportCollectionWorker] = None
-        self.series_import_thread: Optional[QThread] = None  # <-- NUOVO
-        self.series_import_worker: Optional[ImportSeriesWorker] = None  # <-- NUOVO
+        self.series_import_thread: Optional[QThread] = None
+        self.series_import_worker: Optional[ImportSeriesWorker] = None
         self.total_sync_thread: Optional[QThread] = None
+        self.total_sync_worker: Optional[TotalSyncWorker] = None
+        self.bulk_edit_dialog: Optional[BulkEditDialog] = None
         self.fics_in_memory: Dict[str, sqlite3.Row] = {}
         self._ignore_selection_change: bool = False
         self.status_text_colors: Dict[str, QColor] = {}
@@ -276,7 +290,15 @@ class MainWindow(QMainWindow):
         self.sync_status_button: QPushButton
         self.open_browser_button: QPushButton
         self.rating_buttons: List[QPushButton]
+        self.add_to_library_button: QPushButton
         self.delete_button: QPushButton
+
+        self.view_filter_group: "QButtonGroup"
+        self.library_button: QPushButton
+        self.history_button: QPushButton
+        self.inbox_button: QPushButton
+        self.all_button: QPushButton
+        self.current_view_filter: str = "library"
 
         self.tag_completer: QCompleter
         self.tag_completer_model: QStringListModel
@@ -294,6 +316,19 @@ class MainWindow(QMainWindow):
         self._create_menu()
         self._create_main_layout()
         self._connect_signals()
+        base_stylesheet = """
+            QPushButton#deleteButton {
+                background-color: #a13333;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton#deleteButton:hover {
+                background-color: #c94040;
+            }
+        """
+        self.setStyleSheet(base_stylesheet)
 
         if self.current_theme == const.THEME_DARK:
             self.dark_theme_action.setChecked(True)
@@ -307,7 +342,7 @@ class MainWindow(QMainWindow):
 
         self._update_fics_table()
         self._update_search_completer()
-        self._update_tag_completer()  # Questa chiamata che hai già aggiunto è corretta
+        self._update_tag_completer()
         self._load_settings()
         self._generate_startup_notification()
         self._update_welcome_message()
@@ -383,6 +418,9 @@ class MainWindow(QMainWindow):
         import_bookmarks_action = QAction("Import from AO3 Bookmarks...", self)
         import_bookmarks_action.triggered.connect(self._start_bookmarks_import)
         tools_menu.addAction(import_bookmarks_action)
+        import_history_action = QAction("Import from AO3 History...", self)
+        import_history_action.triggered.connect(self._start_history_import)
+        tools_menu.addAction(import_history_action)
 
         for idx, name in enumerate(self.column_map):
             if name in [const.COLUMN_TITLE, const.COLUMN_STATUS]:
@@ -401,6 +439,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         top_layout = self._create_top_layout()
         search_layout = self._create_search_layout()
+        view_filter_layout = self._create_view_filter_layout()
         filter_layout = self._create_filter_layout()
         welcome_layout = QHBoxLayout()
         self.welcome_label = QLabel()
@@ -410,6 +449,7 @@ class MainWindow(QMainWindow):
         gamification_layout = self._create_gamification_layout()
         left_layout.addLayout(top_layout)
         left_layout.addLayout(search_layout)
+        left_layout.addLayout(view_filter_layout)
         left_layout.addLayout(welcome_layout)
         left_layout.addLayout(filter_layout)
         left_layout.addLayout(gamification_layout)
@@ -480,7 +520,7 @@ class MainWindow(QMainWindow):
                 f"Show: {const.STATUS_COMMENTED}",
                 f"Show: {const.STATUS_DROPPED}",
             ]
-        )  # noqa: E501
+        )
         filter_layout.addStretch()
         filter_layout.addWidget(QLabel("Filter by status:"))
         filter_layout.addWidget(self.status_filter_combo)
@@ -528,6 +568,8 @@ class MainWindow(QMainWindow):
             const.COLUMN_RELATIONSHIPS,
             const.COLUMN_CHARACTERS,
             const.COLUMN_USER_TAGS,
+            const.COLUMN_LAST_VISIT,
+            const.COLUMN_VISIT_COUNT,
         ]
 
         for column_name in columns_to_hide_by_default:
@@ -565,28 +607,38 @@ class MainWindow(QMainWindow):
         self.detail_tags = QLabel()
         self.detail_tags.setWordWrap(True)
         self.detail_tags.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.detail_user_tags = QTextBrowser()
-        self.detail_user_tags.setReadOnly(True)
-        self.detail_user_tags.setOpenLinks(False)  # FONDAMENTALE: per gestire i click sui link noi stessi
-        self.detail_user_tags.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.detail_user_tags.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.detail_user_tags.setStyleSheet("QTextBrowser { border: none; background-color: transparent; }")
+
+        self.detail_user_tags = QLabel()
+        self.detail_user_tags.setWordWrap(True)
+        self.detail_user_tags.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.detail_user_tags.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
         self.detail_summary = QTextEdit()
         self.detail_summary.setReadOnly(True)
         self.detail_notes = NoteWidget()
         self.detail_notes.setPlaceholderText("Your personal notes...")
         status_layout = self._create_details_status_buttons()
         rating_layout = self._create_details_rating_buttons()
-        self.delete_button = QPushButton("DELETE FIC")
-        self.delete_button.setStyleSheet("background-color: #a13333; color: white;")
+        self.delete_button = QPushButton("🗑️ DELETE FIC")
+        self.delete_button.setObjectName("deleteButton")
+
+        self.add_to_library_button = QPushButton("📚 Add to Library")
+        self.add_to_library_button.setStyleSheet(
+            "background-color: #2a9d8f; color: white; font-weight: bold; border-radius: 4px; padding: 5px;"
+        )
+        self.add_to_library_button.setVisible(False)
+
+        actions_layout = QHBoxLayout()
+        actions_layout.addWidget(self.add_to_library_button)
+        actions_layout.addStretch()
+        actions_layout.addWidget(self.delete_button)
+
         right_layout.addLayout(title_layout)
         right_layout.addWidget(self.detail_author)
         right_layout.addWidget(self.detail_info)
         right_layout.addWidget(self.detail_category)
         right_layout.addWidget(self.detail_relationships)
         right_layout.addWidget(self.detail_characters)
-        right_layout.addWidget(QLabel("<b>Tags:</b>"))
         right_layout.addWidget(self.detail_tags)
         right_layout.addWidget(QLabel("<b>Your Tags:</b>"))
         right_layout.addWidget(self.detail_user_tags)
@@ -608,6 +660,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.detail_notes, 1)
         right_layout.addLayout(status_layout)
         right_layout.addLayout(rating_layout)
+        right_layout.addLayout(actions_layout)
         right_layout.addWidget(self.delete_button)
         right_widget.setVisible(False)
         return right_widget
@@ -662,20 +715,19 @@ class MainWindow(QMainWindow):
         self.detail_characters.linkActivated.connect(self._execute_search_from_link)
         self.detail_tags.linkActivated.connect(self._execute_search_from_link)
         self.add_tag_button.clicked.connect(self._add_tag_to_fic)
-        self.detail_user_tags.anchorClicked.connect(self._on_user_tag_clicked)  # Da linkActivated a anchorClicked
-        self.detail_user_tags.customContextMenuRequested.connect(
-            self._open_user_tag_context_menu
-        )  # Puntiamo alla nuova funzione
-        self.to_read_button.clicked.connect(lambda: self._change_fic_status(const.STATUS_TO_READ))
-        self.read_button.clicked.connect(lambda: self._change_fic_status(const.STATUS_READ))
-        self.dropped_button.clicked.connect(lambda: self._change_fic_status(const.STATUS_DROPPED))
+        self.detail_user_tags.linkActivated.connect(self._execute_search_from_link)
+        self.detail_user_tags.customContextMenuRequested.connect(self._open_user_tag_context_menu)
+        self.to_read_button.clicked.connect(partial(self._change_fic_status, const.STATUS_TO_READ))
+        self.read_button.clicked.connect(partial(self._change_fic_status, const.STATUS_READ))
+        self.dropped_button.clicked.connect(partial(self._change_fic_status, const.STATUS_DROPPED))
         self.open_browser_button.clicked.connect(self._open_fic_in_browser)
         if self.manual_override_enabled:
-            self.kudosed_button.clicked.connect(lambda: self._change_fic_status(const.STATUS_KUDOSED, 0))
-            self.commented_button.clicked.connect(lambda: self._change_fic_status(const.STATUS_COMMENTED, 0))
+            self.kudosed_button.clicked.connect(partial(self._change_fic_status, const.STATUS_KUDOSED, verified=0))
+            self.commented_button.clicked.connect(partial(self._change_fic_status, const.STATUS_COMMENTED, verified=0))
         else:
             self.sync_status_button.clicked.connect(self.start_status_sync)
         for i, btn in enumerate(self.rating_buttons):
+
             btn.clicked.connect(lambda checked, num=i + 1: self._save_rating(num))
         self.delete_button.clicked.connect(
             lambda: self._on_delete_fics_clicked([self.selected_url] if self.selected_url else [])
@@ -683,6 +735,8 @@ class MainWindow(QMainWindow):
         self.search_input.textChanged.connect(self._on_search_triggered)
         self.search_combo.currentIndexChanged.connect(self._on_search_triggered)
         self.status_filter_combo.currentIndexChanged.connect(self._on_quick_filter_triggered)
+        self.view_filter_group.buttonClicked.connect(self._on_view_filter_changed)
+        self.add_to_library_button.clicked.connect(self._add_to_library)
 
     def _open_fics_table_context_menu(self, position: QPoint) -> None:
         selected_items = self.fics_table.selectedItems()
@@ -730,7 +784,7 @@ class MainWindow(QMainWindow):
         logger.info(f"Applying bulk changes to {len(urls)} fics: {changes}")
 
         new_status = changes["status"]
-        if new_status and isinstance(new_status, str):  # <-- Controllo del tipo
+        if new_status and isinstance(new_status, str):
             bulk_update_status(urls, new_status)
 
         if changes["add_tags"]:
@@ -776,7 +830,7 @@ class MainWindow(QMainWindow):
         self._apply_bulk_changes(urls_to_modify, changes)
 
         selection_model = self.fics_table.selectionModel()
-        if selection_model:  # <-- Controllo di sicurezza
+        if selection_model:
             selection_model.blockSignals(True)
 
         for url in urls_to_modify:
@@ -810,8 +864,85 @@ class MainWindow(QMainWindow):
         if self.bulk_edit_dialog and self.bulk_edit_dialog.isVisible():
             self.refresh_bulk_edit_dialog_tags()
 
+    def _create_view_filter_layout(self) -> QHBoxLayout:
+        """Crea il layout con i pulsanti per filtrare la vista principale."""
+        view_filter_layout = QHBoxLayout()
+
+        filter_container = QWidget()
+        filter_container_layout = QHBoxLayout(filter_container)
+        filter_container_layout.setContentsMargins(0, 0, 0, 0)
+        filter_container_layout.setSpacing(6)
+
+        style_sheet = """
+            QPushButton {
+                padding: 5px 10px; /* Aggiunge un po' di respiro al testo */
+            }
+            QPushButton:checked {
+                background-color: #007acc;
+                color: white;
+                font-weight: bold;
+                border: 1px solid #005a9e;
+            }
+        """
+        filter_container.setStyleSheet(style_sheet)
+
+        filter_container_layout.addWidget(QLabel("<b>View:</b>"))
+
+        self.view_filter_group = QButtonGroup(self)
+        self.view_filter_group.setExclusive(True)
+
+        self.library_button = QPushButton("📚 My Library")
+        self.library_button.setCheckable(True)
+        self.library_button.setChecked(True)
+
+        self.history_button = QPushButton("🕓 History")
+        self.history_button.setCheckable(True)
+
+        self.inbox_button = QPushButton("📥 Inbox")
+        self.inbox_button.setCheckable(True)
+
+        self.all_button = QPushButton("🌐 All Entries")
+        self.all_button.setCheckable(True)
+
+        self.view_filter_group.addButton(self.library_button)
+        self.view_filter_group.addButton(self.history_button)
+        self.view_filter_group.addButton(self.inbox_button)
+        self.view_filter_group.addButton(self.all_button)
+
+        filter_container_layout.addWidget(self.library_button)
+        filter_container_layout.addWidget(self.history_button)
+        filter_container_layout.addWidget(self.inbox_button)
+        filter_container_layout.addWidget(self.all_button)
+
+        view_filter_layout.addWidget(filter_container)
+        view_filter_layout.addStretch()
+
+        return view_filter_layout
+
+    def _add_to_library(self) -> None:
+        """
+        Aggiunge l'opera attualmente selezionata alla libreria e aggiorna la UI.
+        """
+        if not self.selected_url:
+            return
+
+        from database import set_fic_in_library
+
+        set_fic_in_library(self.selected_url)
+
+        self.add_to_library_button.setVisible(False)
+
+        self.fics_in_memory[self.selected_url]["is_in_library"] = True
+
+        row_to_update = self._find_row_by_url(self.selected_url)
+        if row_to_update is not None:
+            fic_data = self.fics_in_memory[self.selected_url]
+            self._populate_table_row(row_to_update, fic_data)
+
+        QMessageBox.information(self, "Success", "Work has been added to your library!")
+
     def refresh_bulk_edit_dialog_tags(self) -> None:
-        """Ricalcola e aggiorna la lista dei tag comuni nella BulkEditDialog."""
+
         if not self.bulk_edit_dialog:
             return
 
@@ -825,7 +956,7 @@ class MainWindow(QMainWindow):
         self.bulk_edit_dialog.populate_remove_tags_list(common_tags)
 
     def _get_selected_urls_from_table(self) -> List[str]:
-        """Funzione helper per ottenere gli URL correntemente selezionati."""
+
         selected_urls_set: set[str] = set()
 
         for item in self.fics_table.selectedItems():
@@ -850,13 +981,24 @@ class MainWindow(QMainWindow):
     def _populate_table_row(self, row_num: int, fic: sqlite3.Row):
         rating = fic["user_rating"] or 0
         wc = fic["word_count"] or 0
-        complete_icon = "✅" if fic["is_complete"] else "📖"
+        icons = []
+        if fic.get("is_in_library"):
+            icons.append("📚")
+
+        if fic["is_complete"]:
+            icons.append("✅")
+        else:
+            icons.append("📖")
+
+        icon_str = " ".join(icons)
         verified_icon = "🔹" if fic["status_verified"] else "🔸"
         hits = fic["hits"] or 0
         kudos = fic["kudos"] or 0
+        visits = fic["visit_count"] or 0
         series_text = f"{fic['series_name']} (Part {fic['series_part']})" if fic["series_name"] else ""
+
         items: Dict[str, QTableWidgetItem] = {
-            const.COLUMN_TITLE: QTableWidgetItem(f"{complete_icon} {fic['title']}"),
+            const.COLUMN_TITLE: QTableWidgetItem(f"{icon_str} {fic['title']}"),
             const.COLUMN_AUTHOR: QTableWidgetItem(fic["author"]),
             const.COLUMN_FANDOM: QTableWidgetItem(fic["fandoms"]),
             const.COLUMN_CHAPTERS: QTableWidgetItem(fic["chapters"]),
@@ -868,25 +1010,48 @@ class MainWindow(QMainWindow):
             const.COLUMN_RELATIONSHIPS: QTableWidgetItem(fic["relationships"]),
             const.COLUMN_CHARACTERS: QTableWidgetItem(fic["characters"]),
             const.COLUMN_USER_TAGS: QTableWidgetItem(fic["user_tags"] or ""),
+            const.COLUMN_LAST_VISIT: QTableWidgetItem(fic["last_visit_date"] or ""),
         }
+        items[const.COLUMN_VISIT_COUNT] = NumericTableWidgetItem(f"{visits:,}")
+        items[const.COLUMN_VISIT_COUNT].setData(Qt.ItemDataRole.UserRole, visits)
         items[const.COLUMN_WORDS] = NumericTableWidgetItem(f"{wc:,}")
         items[const.COLUMN_WORDS].setData(Qt.ItemDataRole.UserRole, wc)
 
         items[const.COLUMN_HITS] = NumericTableWidgetItem(f"{hits:,}")
         items[const.COLUMN_HITS].setData(Qt.ItemDataRole.UserRole, hits)
+
         items[const.COLUMN_KUDOS] = NumericTableWidgetItem(f"{kudos:,}")
         items[const.COLUMN_KUDOS].setData(Qt.ItemDataRole.UserRole, kudos)
 
-        items[const.COLUMN_USER_RATING] = NumericTableWidgetItem("★" * rating + "☆" * (5 - rating))
-        items[const.COLUMN_USER_RATING].setData(Qt.ItemDataRole.UserRole, rating)
+        rating_item_for_sorting = NumericTableWidgetItem()
+        rating_item_for_sorting.setData(Qt.ItemDataRole.UserRole, rating)
+
         text_color = self.status_text_colors.get(fic["status"], QColor("black"))
+
         items[const.COLUMN_TITLE].setData(Qt.ItemDataRole.UserRole, fic["url"])
+
         self.fics_table.setSortingEnabled(False)
+
         for col_idx, key in enumerate(self.column_map):
-            if key in items:
+            if key == const.COLUMN_USER_RATING:
+
+                star_color = "#FFC107"
+                filled_stars_html = f'<font color="{star_color}">{"★" * rating}</font>'
+                empty_stars_text = "☆" * (5 - rating)
+
+                stars_html = filled_stars_html + empty_stars_text
+
+                rating_label = QLabel(stars_html)
+                rating_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                self.fics_table.setCellWidget(row_num, col_idx, rating_label)
+                self.fics_table.setItem(row_num, col_idx, rating_item_for_sorting)
+
+            elif key in items:
                 item = items[key]
                 item.setForeground(text_color)
                 self.fics_table.setItem(row_num, col_idx, item)
+
         self.fics_table.setSortingEnabled(True)
 
     def closeEvent(self, event: Optional[QCloseEvent]) -> None:
@@ -904,16 +1069,45 @@ class MainWindow(QMainWindow):
         config_manager.set(
             const.CONFIG_SECTION_UI, const.CONFIG_KEY_GEOMETRY, self.saveGeometry().toBase64().data().decode("utf-8")
         )
+
         header = self.fics_table.horizontalHeader()
         if header:
-            hidden_cols = [str(i) for i in range(header.count()) if self.fics_table.isColumnHidden(i)]
-        config_manager.set(const.CONFIG_SECTION_UI, "hidden_columns", ",".join(hidden_cols))
 
-    config_manager.save_config()
+            column_order = [str(header.logicalIndex(i)) for i in range(header.count())]
+            config_manager.set(const.CONFIG_SECTION_UI, const.CONFIG_KEY_COL_ORDER, ",".join(column_order))
+
+            hidden_columns = [str(i) for i in range(header.count()) if self.fics_table.isColumnHidden(i)]
+            config_manager.set(const.CONFIG_SECTION_UI, "hidden_columns", ",".join(hidden_columns))
+
+        config_manager.save_config()
 
     def _load_settings(self) -> None:
+
         if geom := config_manager.get(const.CONFIG_SECTION_UI, const.CONFIG_KEY_GEOMETRY, fallback=None):
             self.restoreGeometry(QByteArray.fromBase64(geom.encode("utf-8")))
+
+        header = self.fics_table.horizontalHeader()
+        if header:
+
+            order_str = config_manager.get(const.CONFIG_SECTION_UI, const.CONFIG_KEY_COL_ORDER, fallback=None)
+            if order_str:
+                try:
+
+                    column_order = [int(i) for i in order_str.split(",")]
+                    if len(column_order) == header.count():
+                        for visual_index, logical_index in enumerate(column_order):
+                            header.moveSection(header.visualIndex(logical_index), visual_index)
+                except (ValueError, IndexError):
+                    logger.warning("Could not parse or apply saved column order. Using default.")
+
+            hidden_str = config_manager.get(const.CONFIG_SECTION_UI, "hidden_columns", fallback=None)
+            if hidden_str:
+                try:
+                    hidden_columns = [int(i) for i in hidden_str.split(",") if i.strip()]
+                    for i in range(header.count()):
+                        self.fics_table.setColumnHidden(i, i in hidden_columns)
+                except ValueError:
+                    logger.warning("Could not parse saved hidden columns. Using default.")
         if order_str := config_manager.get(const.CONFIG_SECTION_UI, const.CONFIG_KEY_COL_ORDER, fallback=None):
             order = [int(i) for i in order_str.split(",")]
             header = self.fics_table.horizontalHeader()
@@ -1011,7 +1205,7 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"Starting mass import for author: {url_or_name}")
-        self.add_button.setEnabled(False)  # Assumendo tu abbia questo pulsante
+
         if status_bar:
             status_bar.showMessage("Starting import...")
 
@@ -1022,7 +1216,7 @@ class MainWindow(QMainWindow):
         self.import_worker.progress.connect(self._update_progress_bar)
         self.import_worker.new_fic_added.connect(self._update_fics_table)
 
-        self.import_worker.error.connect(self._on_import_error)  # <-- MODIFICATO: da .new_notification a .error
+        self.import_worker.error.connect(self._on_import_error)
 
         self.import_worker.finished.connect(self._on_mass_import_finished)
         self.import_worker.finished.connect(self.import_thread.quit)
@@ -1035,13 +1229,11 @@ class MainWindow(QMainWindow):
         status_bar = self.statusBar()
         if status_bar:
             status_bar.showMessage("Mass import finished.", 3000)
-        self.add_button.setEnabled(True)
+
         self._update_search_completer()
 
     def _start_bookmarks_import(self) -> None:
-        """
-        Avvia il processo di importazione dei bookmark in un thread separato.
-        """
+
         status_bar = self.statusBar()
 
         if (self.import_thread and self.import_thread.isRunning()) or (
@@ -1064,8 +1256,6 @@ class MainWindow(QMainWindow):
         if status_bar:
             status_bar.showMessage("Starting bookmarks import...")
 
-        self.add_button.setEnabled(False)  # Assumendo tu abbia un pulsante per questo
-
         self.bookmarks_import_thread = QThread()
         self.bookmarks_import_worker = ImportBookmarksWorker()
         self.bookmarks_import_worker.moveToThread(self.bookmarks_import_thread)
@@ -1073,7 +1263,7 @@ class MainWindow(QMainWindow):
         self.bookmarks_import_thread.started.connect(self.bookmarks_import_worker.run)
         self.bookmarks_import_worker.progress.connect(self._update_progress_bar)
         self.bookmarks_import_worker.new_fic_added.connect(self._update_fics_table)
-        self.bookmarks_import_worker.error.connect(self._on_import_error)  # Nuovo slot per errori
+        self.bookmarks_import_worker.error.connect(self._on_import_error)
         self.bookmarks_import_worker.finished.connect(self._on_bookmarks_import_finished)
 
         self.bookmarks_import_worker.finished.connect(self.bookmarks_import_thread.quit)
@@ -1082,6 +1272,60 @@ class MainWindow(QMainWindow):
         self.bookmarks_import_thread.finished.connect(lambda: setattr(self, "bookmarks_import_thread", None))
 
         self.bookmarks_import_thread.start()
+
+    def _start_history_import(self) -> None:
+
+        status_bar = self.statusBar()
+
+        active_imports = [
+            self.import_thread,
+            self.bookmarks_import_thread,
+            self.history_import_thread,
+        ]
+        if any(thread and thread.isRunning() for thread in active_imports):
+            logger.warning("History import requested, but another import is already running.")
+            if status_bar:
+                status_bar.showMessage("An import process is already running.", 3000)
+            return
+
+        if not ao3_client.session:
+            QMessageBox.critical(
+                self,
+                "Login Required",
+                "You must be logged in to import your history.\nPlease use File > Settings / Login.",
+            )
+            return
+
+        logger.info("Starting history import process.")
+        if status_bar:
+            status_bar.showMessage("Starting history import...")
+
+        self.history_import_thread = QThread()
+        self.history_import_worker = ImportHistoryWorker()
+        self.history_import_worker.moveToThread(self.history_import_thread)
+
+        self.history_import_thread.started.connect(self.history_import_worker.run)
+        self.history_import_worker.progress.connect(self._update_progress_bar)
+        self.history_import_worker.new_fic_added.connect(self._update_fics_table)
+        self.history_import_worker.error.connect(self._on_import_error)
+        self.history_import_worker.finished.connect(self._on_history_import_finished)
+
+        self.history_import_worker.finished.connect(self.history_import_thread.quit)
+        self.history_import_worker.finished.connect(self.history_import_worker.deleteLater)
+        self.history_import_thread.finished.connect(self.history_import_thread.deleteLater)
+        self.history_import_thread.finished.connect(lambda: setattr(self, "history_import_thread", None))
+
+        self.history_import_thread.start()
+
+    def _on_history_import_finished(self) -> None:
+
+        status_bar = self.statusBar()
+        if status_bar:
+            status_bar.showMessage("History import finished.", 3000)
+
+        self._update_search_completer()
+        self._update_tag_completer()
+        logger.info("History import process has finished.")
 
     def start_status_sync(self) -> None:
         status_bar = self.statusBar()
@@ -1177,9 +1421,14 @@ class MainWindow(QMainWindow):
         for fic in self.fics_in_memory.values():
             if fic["author"]:
                 suggestions.add(fic["author"])
-            for field in ["fandoms", "tags", "category", "relationships", "characters"]:
-                if fic[field]:
-                    for item in fic[field].split(","):
+
+            fields_to_scan = ["fandoms", "tags", "category", "relationships", "characters", const.SEARCH_USER_TAGS]
+
+            for field in fields_to_scan:
+
+                key = "user_tags" if field == const.SEARCH_USER_TAGS else field
+                if fic[key]:
+                    for item in fic[key].split(","):
                         if item.strip():
                             suggestions.add(item.strip())
         self.completer_model.setStringList(sorted(list(suggestions)))
@@ -1189,7 +1438,7 @@ class MainWindow(QMainWindow):
         previously_selected_url = self.selected_url
         self.fics_table.setSortingEnabled(False)
         self.fics_table.clearContents()
-        all_fics = get_filtered_fics()
+        all_fics = get_filtered_fics(view_filter=self.current_view_filter)
         self.fics_in_memory = {fic["url"]: fic for fic in all_fics}
         fics_to_render = fics_to_display if fics_to_display is not None else all_fics
         self.fics_table.setRowCount(len(fics_to_render))
@@ -1223,9 +1472,18 @@ class MainWindow(QMainWindow):
         self.fic_count_label.setText(f"Total Fics: {stats.get('total_fics', 0)}")
         self.word_count_label.setText(f"Words Read: {stats.get('total_words_read', 0):,}")
 
+    def _perform_search(self, search_text: str, search_field: str) -> None:
+
+        fics_to_display = get_filtered_fics(search_text, search_field)
+        self._update_fics_table(fics_to_display)
+
     def _on_search_triggered(self) -> None:
+        """
+        Slot for user-driven searches (typing, changing dropdown).
+        """
         self.status_filter_combo.setCurrentIndex(0)
-        text, idx = self.search_input.text(), self.search_combo.currentIndex()
+        text = self.search_input.text()
+        idx = self.search_combo.currentIndex()
         field_map = {
             0: const.SEARCH_ALL,
             1: const.SEARCH_TITLE,
@@ -1239,7 +1497,8 @@ class MainWindow(QMainWindow):
             9: const.SEARCH_USER_TAGS,
             10: const.SEARCH_SERIES,
         }
-        self._update_fics_table(get_filtered_fics(text, field_map.get(idx, const.SEARCH_ALL)))
+        field = field_map.get(idx, const.SEARCH_ALL)
+        self._run_search(text, field)
 
     def _on_quick_filter_triggered(self) -> None:
         self.search_input.clear()
@@ -1254,13 +1513,53 @@ class MainWindow(QMainWindow):
             4: const.STATUS_COMMENTED,
             5: const.STATUS_DROPPED,
         }
-        self._update_fics_table([fic for fic in get_filtered_fics() if fic["status"] == status_map.get(idx)])
+        self._update_fics_table(
+            [
+                fic
+                for fic in get_filtered_fics(view_filter=self.current_view_filter)
+                if fic["status"] == status_map.get(idx)
+            ]
+        )  # noqa: E501
+
+    @pyqtSlot()
+    def _on_view_filter_changed(self) -> None:
+        """
+        Gestisce il cambio di vista tra Libreria, Cronologia e Tutto.
+        Aggiorna lo stato interno e ricarica la tabella delle opere.
+        """
+        if self.library_button.isChecked():
+            self.current_view_filter = "library"
+        elif self.history_button.isChecked():
+            self.current_view_filter = "history"
+        elif self.inbox_button.isChecked():
+            self.current_view_filter = "inbox"
+        else:
+            self.current_view_filter = "all"
+
+        logger.info(f"View filter changed to: '{self.current_view_filter}'")
+
+        self.search_input.clear()
+        self.status_filter_combo.setCurrentIndex(0)
+
+        self._update_fics_table()
+
+    def _run_search(self, text: str, field: str) -> None:
+        """
+        Central private method to execute a search and update the UI.
+        """
+        fics_found = get_filtered_fics(text, field, view_filter=self.current_view_filter)
+        self._update_fics_table(fics_found)
 
     def _execute_search_from_link(self, link: str) -> None:
+        """
+        Handler for clicking a search link in the details panel.
+        """
+        print(f"DEBUG: _execute_search_from_link received: '{link}'")
         try:
             field, value = link.split(":", 1)
         except ValueError:
             return
+
         combo_map = {
             "author": 2,
             "fandoms": 3,
@@ -1270,11 +1569,18 @@ class MainWindow(QMainWindow):
             "relationships": 7,
             "characters": 8,
             const.SEARCH_USER_TAGS: 9,
-            const.SEARCH_SERIES: 10,  # <-- AGGIUNTA
+            const.SEARCH_SERIES: 10,
         }
         if idx := combo_map.get(field):
             self.search_combo.setCurrentIndex(idx)
             self.search_input.setText(value)
+            self._run_search(value, field)
+
+    def format_link(self, text: Optional[str], link_type: str) -> str:
+        """Helper method to format a comma-separated string into clickable HTML links."""
+        if not text:
+            return ""
+        return ", ".join([f'<a href="{link_type}:{i.strip()}">{i.strip()}</a>' for i in text.split(",") if i.strip()])
 
     def _on_fic_selection_changed(self) -> None:
         if self._ignore_selection_change:
@@ -1299,42 +1605,58 @@ class MainWindow(QMainWindow):
             comments = data["comments"] or 0
             hits = data["hits"] or 0
             word_count = data["word_count"] or 0
+            last_visit = data.get("last_visit_date")
+            visit_count = data.get("visit_count")
             self.detail_title.setText(data["title"])
 
-            def format_link(text: Optional[str], link_type: str) -> str:
-                return (
-                    ", ".join(
-                        [f'<a href="{link_type}:{i.strip()}">{i.strip()}</a>' for i in text.split(",") if i.strip()]
-                    )
-                    if text
-                    else ""
-                )
-
-            self.detail_author.setText(f"by {format_link(data['author'], 'author')}")
+            self.detail_author.setText(f"by {self.format_link(data['author'], 'author')}")
             series_html = ""
+            history_html = ""
+            if last_visit:
+                history_html = f"<b>Your History:</b> Last visit on {last_visit} ({visit_count} total visits)<br>"
+            self.detail_info.setText(
+                f"{series_html}"
+                f"<b>Fandom:</b> {self.format_link(data['fandoms'], 'fandoms')}<br>"
+                f"<b>Published:</b> {data['date_published']} | <b>Updated:</b> {data['date_updated']}<br>"
+                f"<b>Rating:</b> {data['rating']} | <b>Language:</b> {data['language']}<br>"
+                f"<b>Words:</b> {word_count:,} | <b>Chapters:</b> {data['chapters']}<br>"
+                f"<b>AO3 Stats:</b> Kudos: {kudos:,} | Bookmarks: {bookmarks:,} | Comments: {comments:,} | Hits: {hits:,}<br>"  # noqa: E501
+                f"{history_html}"
+            )
             if data["series_name"]:
                 series_link = f'<a href="series_name:{data["series_name"]}">{data["series_name"]}</a>'
                 series_html = f"Part {data['series_part']} of the series {series_link}<br>"
             self.detail_info.setText(
                 f"{series_html}"
-                f"<b>Fandom:</b> {format_link(data['fandoms'], 'fandoms')}<br>"
+                f"<b>Fandom:</b> {self.format_link(data['fandoms'], 'fandoms')}<br>"
                 f"<b>Published:</b> {data['date_published']} | <b>Updated:</b> {data['date_updated']}<br>"
                 f"<b>Rating:</b> {data['rating']} | <b>Language:</b> {data['language']}<br>"
                 f"<b>Words:</b> {word_count:,} | <b>Chapters:</b> {data['chapters']}<br>"
                 f"<b>Stats:</b> Kudos: {kudos:,} | Bookmarks: {bookmarks:,} | Comments: {comments:,} | Hits: {hits:,}"
             )
-            self.detail_category.setText(f"<b>Category:</b> {format_link(data['category'], 'category')}")
+            self.detail_category.setText(f"<b>Category:</b> {self.format_link(data['category'], 'category')}")
             self.detail_relationships.setText(
-                f"<b>Relationships:</b> {format_link(data['relationships'], 'relationships')}"
+                f"<b>Relationships:</b> {self.format_link(data['relationships'], 'relationships')}"
             )
-            self.detail_characters.setText(f"<b>Characters:</b> {format_link(data['characters'], 'characters')}")
-            self.detail_tags.setText(f"<b>Tags:</b> {format_link(data['tags'], 'tags')}")
+            self.detail_characters.setText(f"<b>Characters:</b> {self.format_link(data['characters'], 'characters')}")
+            self.detail_tags.setText(f"<b>Tags:</b> {self.format_link(data['tags'], 'tags')}")
+
+            user_tags_html = self.format_link(data.get("user_tags"), const.SEARCH_USER_TAGS)
+            self.detail_user_tags.setText(user_tags_html if user_tags_html else "<i>No tags assigned.</i>")
+
             self.detail_summary.setText(data["summary"])
             self.detail_notes.setText(data["user_notes"])
-            self._refresh_tags_display_and_table()
+            is_in_library = data.get("is_in_library", False)
+            self.add_to_library_button.setVisible(not is_in_library)
+
             rating = data["user_rating"] or 0
             for i, btn in enumerate(self.rating_buttons):
-                btn.setText("★" if i < rating else "☆")
+                if i < rating:
+                    btn.setText("★")
+                    btn.setStyleSheet("font-size: 18px; border: none; color: #FFC107;")
+                else:
+                    btn.setText("☆")
+                    btn.setStyleSheet("font-size: 18px; border: none;")
 
     def _add_tag_to_fic(self) -> None:
         if not self.selected_url:
@@ -1342,42 +1664,16 @@ class MainWindow(QMainWindow):
         tag_name = self.tag_input.text().strip()
         if not tag_name:
             return
+
         tag_id = get_or_create_tag(tag_name)
         if tag_id:
             assign_tag_to_fic(self.selected_url, tag_id)
             self.tag_input.clear()
-            self._refresh_tags_display_and_table()
+
+            self._update_current_selection_details()
+
             self._update_tag_completer()
-
-    def _on_user_tag_clicked(self, link: str) -> None:
-        self._execute_search_from_link(link)
-
-    def _refresh_tags_display_and_table(self) -> None:
-        if not self.selected_url:
-            return
-
-        user_tags_data = get_tags_for_fic(self.selected_url)
-
-        if user_tags_data:
-            tags_html_parts = []
-            for _, tag_name in user_tags_data:
-                search_link = f'<a href="{const.SEARCH_USER_TAGS}:{tag_name}">{tag_name}</a>'
-                tags_html_parts.append(search_link)
-            self.detail_user_tags.setHtml(", ".join(tags_html_parts))
-        else:
-            self.detail_user_tags.setHtml("<i>No tags assigned.</i>")
-
-        doc = self.detail_user_tags.document()
-        if doc:
-            doc_height = doc.size().toSize().height()
-            self.detail_user_tags.setFixedHeight(doc_height)
-
-        fresh_fic_data = get_fic_by_url(self.selected_url)
-        if fresh_fic_data:
-            self.fics_in_memory[self.selected_url] = fresh_fic_data
-            row_to_update = self._find_row_by_url(self.selected_url)
-            if row_to_update is not None:
-                self._populate_table_row(row_to_update, fresh_fic_data)
+            self._update_search_completer()
 
     def _save_notes(self) -> None:
         if not self.selected_url:
@@ -1386,9 +1682,7 @@ class MainWindow(QMainWindow):
         new_notes = self.detail_notes.toPlainText()
         if new_notes != current_notes_in_memory:
             update_fic_notes(self.selected_url, new_notes)
-            fresh_fic_data = get_fic_by_url(self.selected_url)
-            if fresh_fic_data:
-                self.fics_in_memory[self.selected_url] = fresh_fic_data
+            self._update_current_selection_details()
             status_bar = self.statusBar()
             if status_bar:
                 status_bar.showMessage("Notes saved.", 2000)
@@ -1398,15 +1692,13 @@ class MainWindow(QMainWindow):
             return
         current_rating = self.fics_in_memory[self.selected_url]["user_rating"] or 0
         new_rating = rating if rating != current_rating else 0
+
         update_fic_rating(self.selected_url, new_rating)
+
+        self._update_current_selection_details()
+
         fresh_fic_data = get_fic_by_url(self.selected_url)
         if fresh_fic_data:
-            self.fics_in_memory[self.selected_url] = fresh_fic_data
-            row_to_update = self._find_row_by_url(self.selected_url)
-            if row_to_update is not None:
-                self._populate_table_row(row_to_update, fresh_fic_data)
-            for i, btn in enumerate(self.rating_buttons):
-                btn.setText("★" if i < new_rating else "☆")
             if check_for_achievements(
                 calculate_base_stats(), get_data_for_charts("lette"), newly_modified_fic=dict(fresh_fic_data)
             ):
@@ -1450,15 +1742,36 @@ class MainWindow(QMainWindow):
 
     def _on_import_clicked(self) -> None:
         """
-        Gestore unificato per il pulsante 'Import'. Analizza l'URL
-        e avvia l'azione appropriata.
+        Gestore unificato per il pulsante 'Import'. Analizza l'URL,
+        gestisce la concorrenza e avvia l'azione appropriata.
         """
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.critical(self, "Error", "Please enter a URL.")
             return
 
-        url_type, identifier = self._parse_ao3_url(url)
+        if self.add_fic_thread and self.add_fic_thread.isRunning():
+            QMessageBox.warning(self, "In Progress", "A fic is already being added. Please wait.")
+            return
+
+        url_type, identifier = parse_ao3_url(url)
+        is_long_request = url_type in ["author", "collection", "series"]
+
+        if self._is_long_worker_running():
+
+            if is_long_request:
+                QMessageBox.warning(
+                    self,
+                    "Import in Progress",
+                    "Another import process is already running in the background.\n"
+                    "Please wait for it to finish before starting a new one.",
+                )
+                return
+
+            elif url_type == "work":
+                self._pause_all_long_workers()
+                self._start_single_fic_add(url)
+                return
 
         match url_type:
             case "work":
@@ -1501,6 +1814,7 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.Yes:
                     self.start_series_import(identifier)
+
             case "unknown":
                 QMessageBox.critical(
                     self, "Invalid URL", "The provided URL is not a recognized AO3 work, author, or collection page."
@@ -1525,7 +1839,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", "Could not retrieve data from the URL.")
         if status_bar:
             status_bar.clearMessage()
-        self.add_button.setEnabled(True)
+        self._resume_all_long_workers()
+
+        if self.history_import_thread and self.history_import_thread.isRunning():
+            if self.history_import_worker:
+                self.history_import_worker.resume()
 
     def _on_add_fic_error(self, error_message: str):
         logger.error(f"An error occurred in the AddFicWorker: {error_message}")
@@ -1533,7 +1851,11 @@ class MainWindow(QMainWindow):
         status_bar = self.statusBar()
         if status_bar:
             status_bar.clearMessage()
-        self.add_button.setEnabled(True)
+        self._resume_all_long_workers()
+
+        if self.history_import_thread and self.history_import_thread.isRunning():
+            if self.history_import_worker:
+                self.history_import_worker.resume()
 
     def _on_delete_fics_clicked(self, urls_to_delete: List[str]) -> None:
         if not urls_to_delete:
@@ -1542,7 +1864,7 @@ class MainWindow(QMainWindow):
         fic_count = len(urls_to_delete)
 
         if fic_count == 1:
-            fic_title = "this fic"  # Un default sicuro
+            fic_title = "this fic"
             fic_data = self.fics_in_memory.get(urls_to_delete[0])
             if fic_data:
                 fic_title = fic_data["title"]
@@ -1553,7 +1875,7 @@ class MainWindow(QMainWindow):
         response = QMessageBox.question(
             self,
             "Confirm Deletion",
-            question,  # 'question' ora ha sempre un valore valido
+            question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1574,7 +1896,7 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"Starting series import for ID: {series_id}")
-        self.add_button.setEnabled(False)
+
         if status_bar:
             status_bar.showMessage(f"Starting import from series '{series_id}'...")
 
@@ -1593,19 +1915,28 @@ class MainWindow(QMainWindow):
         self.series_import_thread.start()
 
     def _apply_theme(self, palette: Optional[Dict[str, str]]) -> None:
+
+        base_stylesheet = self.styleSheet()
+
+        if "/* THEME_SPECIFIC_STYLES_START */" in base_stylesheet:
+            base_stylesheet = base_stylesheet.split("/* THEME_SPECIFIC_STYLES_START */")[0]
+
         if palette is None:
-            self.setStyleSheet("")
+
+            self.setStyleSheet(base_stylesheet)
             self.status_text_colors.update(
                 {
-                    const.STATUS_TO_READ: QColor("#AAAAAA"),
-                    const.STATUS_DROPPED: QColor("#606060"),
-                    const.STATUS_READ: QColor("#E53935"),
-                    const.STATUS_KUDOSED: QColor("#FB8C00"),
-                    const.STATUS_COMMENTED: QColor("#43A047"),
+                    const.STATUS_TO_READ: QColor(const.CLR_STATUS_NEUTRAL_DEFAULT),
+                    const.STATUS_DROPPED: QColor(const.CLR_STATUS_DROPPED_DEFAULT),
+                    const.STATUS_READ: QColor(const.CLR_STATUS_READ_DEFAULT),
+                    const.STATUS_KUDOSED: QColor(const.CLR_STATUS_KUDOSED_DEFAULT),
+                    const.STATUS_COMMENTED: QColor(const.CLR_STATUS_COMMENTED_DEFAULT),
                 }
             )
         else:
-            ss = f"""
+
+            theme_stylesheet = f"""
+                /* THEME_SPECIFIC_STYLES_START */
                 QMainWindow, QDialog {{ background-color: {palette["window_bg"]}; }}
                 QLabel, QCheckBox {{ color: {palette["text"]}; }}
                 QLineEdit, QTextEdit, QSpinBox, QComboBox {{ background-color: {palette["widget_bg"]}; color: {palette["text"]}; border: 1px solid {palette["border"]}; border-radius: 4px; padding: 4px;}}
@@ -1618,18 +1949,19 @@ class MainWindow(QMainWindow):
                 QMenuBar, QMenu {{ background-color: {palette["widget_bg"]}; color: {palette["text"]}; }}
                 QMenu::item:selected {{ background-color: {palette["highlight"]}; }}
             """  # noqa: E501
-            self.setStyleSheet(ss)
+            self.setStyleSheet(base_stylesheet + theme_stylesheet)
             self.status_text_colors.update(
                 {
                     const.STATUS_TO_READ: QColor(palette["text_accent"]),
                     const.STATUS_DROPPED: QColor(palette["text_accent"]),
-                    const.STATUS_READ: QColor("#e63946"),
-                    const.STATUS_KUDOSED: QColor("#fca311"),
-                    const.STATUS_COMMENTED: QColor("#2a9d8f"),
+                    const.STATUS_READ: QColor(const.CLR_STATUS_READ_THEMED),
+                    const.STATUS_KUDOSED: QColor(const.CLR_STATUS_KUDOSED_THEMED),
+                    const.STATUS_COMMENTED: QColor(const.CLR_STATUS_COMMENTED_THEMED),
                 }
             )
+
         if hasattr(self, "fics_table"):
-            self._update_fics_table()
+            self._update_fics_table(get_filtered_fics(view_filter=self.current_view_filter))
 
     def _change_theme(self, theme_name: str) -> None:
         self.current_theme = theme_name
@@ -1644,48 +1976,62 @@ class MainWindow(QMainWindow):
 
     def _open_user_tag_context_menu(self, position: QPoint) -> None:
         """
-        Apre un menu contestuale intelligente che agisce specificamente sul tag
-        sotto il cursore del mouse.
+        Apre un menu contestuale che permette di rimuovere qualsiasi tag
+        attualmente assegnato alla fic selezionata.
         """
         if not self.selected_url:
             return
 
-        cursor = self.detail_user_tags.cursorForPosition(position)
-        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-        clicked_tag_name = cursor.selectedText().strip(" ,.")  # Pulisce da spazi o punteggiatura
-
-        if not clicked_tag_name:
-            return  # L'utente ha cliccato su uno spazio vuoto
-
         all_fic_tags = get_tags_for_fic(self.selected_url)
-        target_tag = None
-        for tag_id, tag_name in all_fic_tags:
-            if tag_name == clicked_tag_name:
-                target_tag = (tag_id, tag_name)
-                break
-
-        if target_tag is None:
-            return  # La parola cliccata non corrisponde a un tag valido
+        if not all_fic_tags:
+            return
 
         menu = QMenu()
-        tag_id_to_remove, tag_name_to_remove = target_tag
-
-        remove_action = menu.addAction(f"Remove Tag '{tag_name_to_remove}'")
-        if remove_action:
-            remove_action.triggered.connect(lambda: self._remove_tag_by_id(tag_id_to_remove))
+        for tag_id, tag_name in all_fic_tags:
+            action = QAction(f"Remove Tag '{tag_name}'", self)
+            action.triggered.connect(lambda checked=False, t_id=tag_id: self._remove_tag_by_id(t_id))
+            menu.addAction(action)
 
         menu.exec(self.detail_user_tags.mapToGlobal(position))
 
     def _remove_tag_by_id(self, tag_id: int) -> None:
         if self.selected_url:
             remove_tag_from_fic(self.selected_url, tag_id)
-            self._refresh_tags_display_and_table()
+
+            self._update_current_selection_details()
+
+    def _update_current_selection_details(self) -> None:
+        """
+        Helper method to fully refresh the data and UI for the currently selected fic.
+        This is the single source of truth for updating the details panel and table row.
+        """
+        if not self.selected_url:
+            self._hide_details_panel()
+            return
+
+        fresh_fic_data = get_fic_by_url(self.selected_url)
+        if not fresh_fic_data:
+
+            self._hide_details_panel()
+            self._update_fics_table(get_filtered_fics())
+            return
+
+        self.fics_in_memory[self.selected_url] = fresh_fic_data
+
+        row_to_update = self._find_row_by_url(self.selected_url)
+        if row_to_update is not None:
+            self._populate_table_row(row_to_update, fresh_fic_data)
+
+        self._on_fic_selection_changed()
 
     def _open_tag_management_window(self) -> None:
         """Apre la finestra di dialogo per la gestione globale dei tag."""
         dialog = TagManagementWindow(self)
         dialog.exec()
+
         self._update_fics_table()
+        self._update_tag_completer()
+        self._update_search_completer()
 
     def _update_tag_completer(self) -> None:
         """
@@ -1704,7 +2050,6 @@ class MainWindow(QMainWindow):
         if status_bar:
             status_bar.showMessage("Bookmarks import finished.", 3000)
 
-        self.add_button.setEnabled(True)  # Assumendo tu abbia un pulsante per questo
         self._update_search_completer()
         self._update_tag_completer()
         logger.info("Bookmarks import process has finished.")
@@ -1719,36 +2064,6 @@ class MainWindow(QMainWindow):
         status_bar = self.statusBar()
         if status_bar:
             status_bar.showMessage("Import failed.", 3000)
-        self.add_button.setEnabled(True)
-
-    def _parse_ao3_url(self, url: str) -> tuple[str, str | None]:
-        """
-        Analizza un URL di AO3 e ne determina il tipo e l'ID/nome.
-
-        Returns:
-            Una tupla contenente (url_type, identifier).
-            url_type può essere 'work', 'author', 'collection', 'series', o 'unknown'.
-            identifier è l'ID o il nome estratto, o None.
-        """
-        work_match = re.search(r"/works/(\d+)", url)
-        if work_match:
-            return ("work", work_match.group(1))
-
-        author_works_match = re.search(r"/users/([^/]+)/works", url)
-        if author_works_match:
-            return ("author", author_works_match.group(1))
-
-        author_profile_match = re.search(r"/users/([^/]+)", url)
-        if author_profile_match:
-            return ("author", author_profile_match.group(1))
-
-        collection_match = re.search(r"/collections/([^/]+)", url)
-        if collection_match:
-            return ("collection", collection_match.group(1).split("/")[0])
-        series_match = re.search(r"/series/(\d+)", url)
-        if series_match:
-            return ("series", series_match.group(1))
-        return ("unknown", None)
 
     def _perform_logout(self) -> None:
         """
@@ -1767,7 +2082,7 @@ class MainWindow(QMainWindow):
 
         logger.info("User initiated logout. Clearing credentials.")
 
-        import security_manager  # Import locale
+        import security_manager
 
         username = config_manager.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME)
 
@@ -1780,7 +2095,7 @@ class MainWindow(QMainWindow):
         )
         config_manager.save_config()
 
-        ao3_client.reload_session()  # Questo imposterà self.session a None
+        ao3_client.reload_session()
 
         QMessageBox.information(self, "Logged Out", "You have been successfully logged out.")
 
@@ -1790,7 +2105,7 @@ class MainWindow(QMainWindow):
     def _update_ui_for_logout(self) -> None:
         """Updates UI elements to reflect the logged-out state."""
         if self.selected_url:
-            self._on_fic_selection_changed()  # Ricarica il pannello con i controlli corretti
+            self._on_fic_selection_changed()
 
         self._update_menu_actions_visibility()
 
@@ -1809,7 +2124,7 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"Starting collection import for: {collection_name}")
-        self.add_button.setEnabled(False)
+
         if status_bar:
             status_bar.showMessage(f"Starting import from collection '{collection_name}'...")
 
@@ -1820,9 +2135,7 @@ class MainWindow(QMainWindow):
         self.collection_import_worker.progress.connect(self._update_progress_bar)
         self.collection_import_worker.new_fic_added.connect(self._update_fics_table)  # noqa: E501
         self.collection_import_worker.error.connect(self._on_import_error)
-        self.collection_import_worker.finished.connect(
-            self._on_mass_import_finished
-        )  # Possiamo riutilizzare lo stesso slot di fine
+        self.collection_import_worker.finished.connect(self._on_mass_import_finished)
         self.collection_import_worker.finished.connect(self.collection_import_thread.quit)
         self.collection_import_worker.finished.connect(self.collection_import_worker.deleteLater)
         self.collection_import_thread.finished.connect(self.collection_import_thread.deleteLater)
@@ -1897,8 +2210,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "In Progress", "A fic is already being added. Please wait.")
             return
 
+        if self.history_import_thread and self.history_import_thread.isRunning():
+            if self.history_import_worker:
+                self.history_import_worker.pause()
+
         logger.info(f"Starting worker to add fic from URL: {url}")
-        self.add_button.setEnabled(False)  # Il pulsante ora si chiama "Import"
+
         status_bar = self.statusBar()
         if status_bar:
             status_bar.showMessage("Retrieving data from AO3...")
@@ -1917,7 +2234,47 @@ class MainWindow(QMainWindow):
     def _on_total_sync_finished(self) -> None:
         logger.info("Total sync process has concluded.")
         self.total_sync_thread = None
-        self._update_fics_table()  # Ricarica la tabella con i nuovi stati
+        self._update_fics_table()
+
+    def _is_long_worker_running(self) -> bool:
+        """Controlla se uno qualsiasi dei worker a lunga esecuzione è attivo."""
+        threads = [
+            self.import_thread,
+            self.bookmarks_import_thread,
+            self.history_import_thread,
+            self.collection_import_thread,
+            self.series_import_thread,
+            self.total_sync_thread,
+        ]
+        return any(thread and thread.isRunning() for thread in threads)
+
+    def _pause_all_long_workers(self) -> None:
+        """Mette in pausa tutti i worker a lunga esecuzione attualmente attivi."""
+        logger.info("Requesting pause for all active long-running workers.")
+        workers_map = {
+            self.import_thread: self.import_worker,
+            self.bookmarks_import_thread: self.bookmarks_import_worker,
+            self.history_import_thread: self.history_import_worker,
+            self.collection_import_thread: self.collection_import_worker,
+            self.series_import_thread: self.series_import_worker,
+        }
+        for thread, worker in workers_map.items():
+            if thread and thread.isRunning() and worker and hasattr(worker, "pause"):
+                worker.pause()  # type: ignore
+
+    def _resume_all_long_workers(self) -> None:
+        """Riprende l'esecuzione di tutti i worker a lunga esecuzione."""
+        logger.info("Requesting resume for all active long-running workers.")
+        workers_map = {
+            self.import_thread: self.import_worker,
+            self.bookmarks_import_thread: self.bookmarks_import_worker,
+            self.history_import_thread: self.history_import_worker,
+            self.collection_import_thread: self.collection_import_worker,
+            self.series_import_thread: self.series_import_worker,
+        }
+        for thread, worker in workers_map.items():
+            if thread and thread.isRunning() and worker and hasattr(worker, "resume"):
+                worker.resume()  # type: ignore
 
 
 if __name__ == "__main__":
@@ -1926,6 +2283,7 @@ if __name__ == "__main__":
     initialize_database()
     try:
         run_database_migrations()
+
     except Exception:
         logger.critical("Database migration failed. The application cannot start safely. Please check the logs.")
         sys.exit(1)

@@ -28,6 +28,7 @@ class ConfigManager:
                 const.CONFIG_KEY_MANUAL_OVERRIDE: "false",
                 const.CONFIG_KEY_THEME: const.THEME_DEFAULT,
                 "welcome_dialog_shown": "false",
+                "full_history_import_completed": "false",
             },
             const.CONFIG_SECTION_UI: {
                 const.CONFIG_KEY_GEOMETRY: "",

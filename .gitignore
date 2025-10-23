@@ -4,7 +4,6 @@ config.ini
 ao3_helper.log
 /build/
 /dist/
-*.spec
 /Output/
 /Release/
 /setup.exe
@@ -29,4 +28,3 @@ env/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-/tests/

@@ -2,6 +2,7 @@
 
 [Setup]
 AppName=AO3 Helper
+AppId={{b74309af-b1ac-4cd3-9733-93975923a6d8}}
 AppVersion=1.6.0
 AppPublisher=Symphony_of_Dreams
 DefaultDirName={autopf}\AO3 Helper
@@ -16,8 +17,7 @@ OutputBaseFilename=setup_ao3_helper_v1.6.0
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-
-Source: "G:\Ao3 Helper\dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\AO3 Helper\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 

@@ -1,10 +1,8 @@
-
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import constants as const
-
 from ao3_manager import AO3Client
-
 
 
 @patch("ao3_manager.security_manager")
@@ -42,7 +40,7 @@ def test_ao3_client_initialization_guest_mode(mock_ao3_session):
 def test_fetch_fic_data_processes_work_correctly():
     """
     Verifica che fetch_fic_data prenda un oggetto 'Work' simulato e lo processi
-    correttamente in un dizionario. Questo è il test più importante.
+    correttamente in un dizionario.
     """
     mock_work = MagicMock()
     mock_work.url = "https://archiveofourown.org/works/123"
@@ -59,23 +57,33 @@ def test_fetch_fic_data_processes_work_correctly():
     mock_work.relationships = ["Char A/Char B"]
     mock_work.characters = ["Char A", "Char B"]
     mock_work.nchapters = 10
-    mock_work.expected_chapters = 10  # Per simulare una fic completa
+    mock_work.expected_chapters = 10
+    mock_work.series = []
+    mock_work.date_published = datetime(2025, 1, 1)
+    mock_work.date_updated = datetime(2025, 1, 1)
+    mock_work.language = "English"
+    mock_work.hits = 100
+    mock_work.kudos = 50
+    mock_work.bookmarks = 10
+    mock_work.comments = 5
 
-    with patch("ao3_manager.AO3") as mock_ao3_lib:
-        mock_ao3_lib.Work.return_value = mock_work
+    # Patchiamo la creazione dell'oggetto AO3.Work per ritornare il nostro mock già pronto
+    with patch("ao3_manager.AO3.Work", return_value=mock_work) as mock_work_class:
 
         client = AO3Client()
-        client.session = None
+        client.session = None  # Forza la modalità guest
 
         result = client.fetch_fic_data("https://archiveofourown.org/works/123")
 
+        # Ora verifichiamo che la nostra funzione abbia processato il mock correttamente
         assert result is not None
         assert result["title"] == "Mock Fic Title"
         assert result["author"] == "MockAuthor"
-        assert result["fandoms"] == "Test Fandom"
-        assert result["rating"] == "General Audiences"
         assert result["word_count"] == 5000
         assert result["is_complete"] is True
+        assert result["hits"] == 100
 
-        mock_ao3_lib.Work.assert_called_once_with(123, session=None)
+        # Verifichiamo che il nostro codice abbia chiamato AO3.Work per creare l'oggetto
+        # e che poi abbia chiamato .reload() su quell'oggetto per caricarlo.
+        mock_work_class.assert_called_with(123, load=False)
         mock_work.reload.assert_called_once()

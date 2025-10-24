@@ -40,7 +40,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -144,7 +143,7 @@ class MainWindow(QMainWindow):
     bookmarks_import_thread: Optional[QThread]
     sync_thread: Optional[QThread]
     selected_url: Optional[str]
-    fics_in_memory: Dict[str, sqlite3.Row]
+    fics_in_memory: Dict[str, Dict[str, Any]]
     _ignore_selection_change: bool
     status_text_colors: Dict[str, QColor]
     manual_override_enabled: bool
@@ -183,7 +182,7 @@ class MainWindow(QMainWindow):
     detail_relationships: QLabel
     detail_characters: QLabel
     detail_tags: QLabel
-    detail_user_tags: QTextBrowser
+    detail_user_tags: QLabel
     tag_input: QLineEdit
     add_tag_button: QPushButton
     detail_summary: QTextEdit
@@ -207,7 +206,6 @@ class MainWindow(QMainWindow):
     total_sync_worker: Optional[TotalSyncWorker] = None
     bulk_edit_dialog: Optional[BulkEditDialog] = None
     update_worker: Optional[UpdateCheckWorker]
-    import_worker: Optional[MassImportWorker]
     sync_worker: Optional[SyncStatusWorker]
 
     def __init__(self) -> None:
@@ -277,7 +275,7 @@ class MainWindow(QMainWindow):
         self.detail_relationships: QLabel
         self.detail_characters: QLabel
         self.detail_tags: QLabel
-        self.detail_user_tags: QTextBrowser
+        self.detail_user_tags: QLabel
         self.tag_input: QLineEdit
         self.add_tag_button: QPushButton
         self.detail_summary: QTextEdit
@@ -978,7 +976,7 @@ class MainWindow(QMainWindow):
                     return row
         return None
 
-    def _populate_table_row(self, row_num: int, fic: sqlite3.Row):
+    def _populate_table_row(self, row_num: int, fic: Dict[str, Any]):
         rating = fic["user_rating"] or 0
         wc = fic["word_count"] or 0
         icons = []
@@ -1433,7 +1431,7 @@ class MainWindow(QMainWindow):
                             suggestions.add(item.strip())
         self.completer_model.setStringList(sorted(list(suggestions)))
 
-    def _update_fics_table(self, fics_to_display: Optional[List[sqlite3.Row]] = None) -> None:
+    def _update_fics_table(self, fics_to_display: Optional[List[Dict[str, Any]]] = None) -> None:
         self._ignore_selection_change = True
         previously_selected_url = self.selected_url
         self.fics_table.setSortingEnabled(False)
@@ -2143,7 +2141,7 @@ class MainWindow(QMainWindow):
         self.collection_import_thread.start()
 
     @pyqtSlot(sqlite3.Row)
-    def _update_single_fic_row(self, fic_data: sqlite3.Row) -> None:
+    def _update_single_fic_row(self, fic_data: Dict[str, Any]) -> None:
         """Aggiorna una singola riga nella tabella senza ricaricare tutto."""
         url = fic_data["url"]
 

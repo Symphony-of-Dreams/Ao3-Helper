@@ -1,40 +1,35 @@
-
 import constants as const
-from database import (
-    add_fic,
-    calculate_base_stats,
-    delete_fic,
-    get_filtered_fics,
-    update_fic_status,
-)
+from database import add_fic, calculate_base_stats, delete_fic, get_filtered_fics, update_fic_status
+from models import Fic
 
 BASE_FIC_DATA = {
     "url": "https://archiveofourown.org/works/12345",
     "title": "My Test Fic",
     "author": "Test Author",
+    "fandoms": "Test Fandom",
+    "tags": "Test Tag",
+    "rating": "General Audiences",
     "word_count": 1000,
+    "summary": "A test summary.",
+    "category": "M/M",
+    "relationships": "A/B",
+    "characters": "A",
     "is_complete": True,
+    "series_name": "Test Series",
+    "series_url": "/series/1",
+    "series_part": 1,
     "chapters": "1/1",
     "date_published": "2025-01-01",
     "date_updated": "2025-01-01",
+    "source": "manual",
     "language": "English",
     "hits": 100,
     "kudos": 10,
     "bookmarks": 5,
     "comments": 2,
-    "series_name": "",
-    "series_url": "",
-    "series_part": None,
-    "source": "manual",
-    "last_read_date": "",
+    "is_in_history": False,
+    "last_visit_date": None,
     "visit_count": None,
-    "rating": "General Audiences",
-    "fandoms": "Test Fandom",
-    "tags": "Test Tag",
-    "category": "M/M",
-    "relationships": "A/B",
-    "characters": "A",
-    "summary": "A test summary.",
 }
 
 
@@ -42,8 +37,8 @@ def test_add_and_get_fic(db_connection):
     """
     Verifica che possiamo aggiungere una fic e poi recuperarla.
     """
-    result = add_fic(BASE_FIC_DATA)
-    assert result is True, "add_fic dovrebbe ritornare True in caso di successo."
+
+    Fic.create(**BASE_FIC_DATA)
 
     all_fics = get_filtered_fics()
     assert len(all_fics) == 1

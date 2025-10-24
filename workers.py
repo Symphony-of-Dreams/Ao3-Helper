@@ -1,4 +1,3 @@
-import sqlite3
 import time
 from typing import Any, Dict, List, cast
 
@@ -312,7 +311,7 @@ class TotalSyncWorker(QObject):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, fics_to_sync: List[sqlite3.Row]) -> None:
+    def __init__(self, fics_to_sync: List[Dict[str, Any]]) -> None:
         super().__init__()
         self.fics_to_sync = fics_to_sync
         self._is_cancelled = False

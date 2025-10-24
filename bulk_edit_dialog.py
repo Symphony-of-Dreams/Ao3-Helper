@@ -132,7 +132,8 @@ class BulkEditDialog(QDialog):
         self.reset_form()
 
         if hasattr(self.parent_window, "refresh_bulk_edit_dialog_tags"):
-            if hasattr(self.parent_window, "refresh_bulk_edit_dialog_tags"):
+            if self.parent_window and hasattr(self.parent_window, "refresh_bulk_edit_dialog_tags"):
+
                 self.parent_window.refresh_bulk_edit_dialog_tags()
 
     def reset_form(self) -> None:

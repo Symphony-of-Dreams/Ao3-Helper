@@ -19,6 +19,19 @@ combine-as-imports = true
 
 [tool.mypy]
 python_version = "3.13"
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = '(?x)(venv/|dist/)'
+[[tool.mypy.overrides]]
+module = [
+    "AO3.*",
+    "PyQt6.*",
+    "keyring.*",
+    "matplotlib.*",
+    "wordcloud.*",
+    "peewee.*",
+    "playhouse.*"
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

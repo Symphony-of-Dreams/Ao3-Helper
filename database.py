@@ -481,21 +481,16 @@ def set_fic_in_library(url: str) -> None:
 
 
 def create_user_tag(name: str) -> int | None:
-    """
-    Crea un nuovo tag utente nel database.
-    Restituisce l'ID del nuovo tag se creato con successo.
-    Restituisce None se il tag esiste già.
-    """
+
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
-            c = conn.cursor()
-            c.execute("INSERT INTO user_tags (name) VALUES (?)", (name,))
-            return c.lastrowid
-    except sqlite3.IntegrityError:
-        logger.warning(f"Attempted to create a duplicate tag: '{name}'")
-        return None
-    except sqlite3.Error as e:
-        logger.exception(f"Failed to create user tag '{name}': {e}")
+        tag, created = UserTag.get_or_create(name=name)
+        if created:
+            return tag.tag_id
+        else:
+            logger.warning(f"Attempted to create a duplicate tag: '{name}'")
+            return None
+    except Exception as e:
+        logger.exception(f"Failed to create user tag '{name}' using ORM: {e}")
         return None
 
 
@@ -661,31 +656,28 @@ def get_latest_history_date() -> str | None:
 
 
 def calculate_base_stats() -> Dict[str, int]:
-    stats = {}
-    try:
-        with sqlite3.connect(const.DB_NAME) as conn:
-            c = conn.cursor()
-            stats["total_fics"] = c.execute("SELECT COUNT(*) FROM fics").fetchone()[0]
-            stats["fics_read"] = c.execute(
-                "SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_READ,)
-            ).fetchone()[0]
-            stats["fics_commented"] = c.execute(
-                "SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_COMMENTED,)
-            ).fetchone()[0]
-            stats["fics_to_read"] = c.execute(
-                "SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_TO_READ,)
-            ).fetchone()[0]
-            stats["fics_dropped"] = c.execute(
-                "SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_DROPPED,)
-            ).fetchone()[0]
 
-            words_query = (
-                f"SELECT SUM(word_count) FROM fics WHERE status IN ({','.join('?' for _ in const.COMPLETED_STATUSES)})"
-            )
-            words = c.execute(words_query, const.COMPLETED_STATUSES).fetchone()[0]
-            stats["total_words_read"] = words if words else 0
-    except sqlite3.Error as e:
-        logger.exception(f"Failed to calculate base stats: {e}")
+    stats = {
+        "total_fics": 0,
+        "fics_read": 0,
+        "fics_commented": 0,
+        "fics_to_read": 0,
+        "fics_dropped": 0,
+        "total_words_read": 0,
+    }
+    try:
+        stats["total_fics"] = Fic.select().count()
+        stats["fics_read"] = Fic.select().where(Fic.status == const.STATUS_READ).count()
+        stats["fics_commented"] = Fic.select().where(Fic.status == const.STATUS_COMMENTED).count()
+        stats["fics_to_read"] = Fic.select().where(Fic.status == const.STATUS_TO_READ).count()
+        stats["fics_dropped"] = Fic.select().where(Fic.status == const.STATUS_DROPPED).count()
+
+        # Calcolo parole lette
+        words_query = Fic.select(fn.SUM(Fic.word_count)).where(Fic.status.in_(const.COMPLETED_STATUSES)).scalar()
+        stats["total_words_read"] = words_query or 0
+
+    except Exception as e:
+        logger.exception(f"Failed to calculate base stats using ORM: {e}")
     return stats
 
 
@@ -911,3 +903,38 @@ def bulk_remove_tags(urls: List[str], tags_to_remove: List[str]) -> None:
         logger.info(f"Bulk removed tags {tags_to_remove} from {len(urls)} fics.")
     except sqlite3.Error as e:
         logger.exception(f"Failed to bulk remove tags for {len(urls)} fics: {e}")
+
+
+def get_reread_statistics(limit: int = 10) -> List[Dict[str, Any]]:
+
+    try:
+        query = (
+            Fic.select(Fic.title, Fic.author, Fic.visit_count)
+            .where((Fic.is_in_history) & (Fic.visit_count > 1))
+            .order_by(Fic.visit_count.desc())
+            .limit(limit)
+            .dicts()
+        )
+        return list(query)
+    except Exception as e:
+        logger.exception(f"Failed to get reread statistics using ORM: {e}")
+        return []
+
+
+def get_discovery_rate_by_month() -> List[Tuple[str, int]]:
+
+    try:
+
+        query = (
+            Fic.select(
+                fn.strftime("%Y-%m", Fic.date_added).alias("month_year"),
+                fn.COUNT(Fic.url).alias("fic_count"),
+            )
+            .group_by(fn.strftime("%Y-%m", Fic.date_added))
+            .order_by(fn.strftime("%Y-%m", Fic.date_added).asc())
+            .tuples()
+        )
+        return list(query)
+    except Exception as e:
+        logger.exception(f"Failed to get discovery rate using ORM: {e}")
+        return []

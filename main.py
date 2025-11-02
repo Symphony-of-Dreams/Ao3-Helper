@@ -51,6 +51,7 @@ import constants as const
 from achievements_window import AchievementsWindow
 from analysis_engine import AnalysisEngine
 from ao3_manager import ao3_client, parse_ao3_url
+from author_recs_dialog import AuthorRecsDialog
 from bulk_edit_dialog import BulkEditDialog
 from config_manager import config_manager
 from dashboard_window import DashboardWindow
@@ -96,6 +97,8 @@ from ui_components import NumericTableWidgetItem
 from workers import (
     AddFicWorker,
     AnalysisWorker,
+    AuthorRecsWorker,
+    DiscoverFicsWorker,
     ImportBookmarksWorker,
     ImportCollectionWorker,
     ImportHistoryWorker,
@@ -234,10 +237,14 @@ class MainWindow(QMainWindow):
         self.selected_url: Optional[str] = None
         self.collection_import_thread: Optional[QThread] = None
         self.collection_import_worker: Optional[ImportCollectionWorker] = None
+        self.author_recs_thread: Optional[QThread] = None
+        self.author_recs_worker: Optional[AuthorRecsWorker] = None
         self.series_import_thread: Optional[QThread] = None
         self.series_import_worker: Optional[ImportSeriesWorker] = None
         self.total_sync_thread: Optional[QThread] = None
         self.total_sync_worker: Optional[TotalSyncWorker] = None
+        self.discovery_thread: Optional[QThread] = None
+        self.discovery_worker: Optional[DiscoverFicsWorker] = None
         self.bulk_edit_dialog: Optional[BulkEditDialog] = None
         self.fics_in_memory: Dict[str, sqlite3.Row] = {}
         self._ignore_selection_change: bool = False
@@ -372,24 +379,18 @@ class MainWindow(QMainWindow):
         """
         self.statusBar().showMessage("Initializing analysis engine...")
 
-        # Crea il thread e il worker e li salva come attributi di istanza
-        # per garantirne la sopravvivenza.
         self.analysis_thread = QThread(self)
         self.analysis_worker = AnalysisWorker(self.analysis_engine)
         self.analysis_worker.moveToThread(self.analysis_thread)
 
-        # Quando il thread parte, esegue il worker.
         self.analysis_thread.started.connect(self.analysis_worker.run)
 
-        # Quando il worker finisce, abilita il pulsante.
         self.analysis_worker.finished.connect(self._on_analysis_ready)
 
-        # Gestione pulita della terminazione.
         self.analysis_worker.finished.connect(self.analysis_thread.quit)
         self.analysis_worker.finished.connect(self.analysis_worker.deleteLater)
         self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
 
-        # Avvia il thread.
         self.analysis_thread.start()
 
     @pyqtSlot()
@@ -551,11 +552,9 @@ class MainWindow(QMainWindow):
         self.saved_filters_combo = QComboBox()
         self.saved_filters_combo.addItem("Saved Filters...")
 
-        # Pulsante per salvare il filtro corrente
         self.save_filter_button = QPushButton("💾 Save")
         self.save_filter_button.setToolTip("Save the current search criteria as a new filter")
 
-        # Pulsante per la ricerca avanzata
         self.advanced_search_button = QPushButton("Advanced...")
         self.advanced_search_button.setToolTip("Open the Filter Builder for complex searches")
 
@@ -604,7 +603,6 @@ class MainWindow(QMainWindow):
         self.clear_search_button = QPushButton("Clear")
         self.clear_search_button.setToolTip("Reset all search filters")
         search_layout.addWidget(self.clear_search_button)
-        # --- FINE MODIFICA ---
 
         return search_layout
 
@@ -630,7 +628,6 @@ class MainWindow(QMainWindow):
         panel = QGroupBox("✨ For You: Next Recommendation")
         panel_layout = QHBoxLayout(panel)
 
-        # Informazioni sul suggerimento
         info_layout = QVBoxLayout()
         self.recommendation_title = QLabel("<b>Title will appear here</b>")
         self.recommendation_title.setStyleSheet("font-size: 14px;")
@@ -644,9 +641,8 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.recommendation_author)
         info_layout.addWidget(self.recommendation_score)
 
-        panel_layout.addLayout(info_layout, 1)  # Il '1' fa in modo che questo layout si espanda
+        panel_layout.addLayout(info_layout, 1)
 
-        # Pulsanti di azione
         actions_layout = QHBoxLayout()
         actions_layout.setAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -659,9 +655,14 @@ class MainWindow(QMainWindow):
         details_button = QPushButton("📊 View All Suggestions...")
         details_button.clicked.connect(self._open_recommendation_center)
 
+        author_recs_button = QPushButton("🌟 Author-Curated...")
+        author_recs_button.clicked.connect(self._open_author_recs_dialog)
+
         actions_layout.addWidget(select_button)
         actions_layout.addWidget(shuffle_button)
         actions_layout.addWidget(details_button)
+
+        actions_layout.addWidget(author_recs_button)
 
         panel_layout.addLayout(actions_layout)
 
@@ -674,8 +675,11 @@ class MainWindow(QMainWindow):
             return
 
         dialog = RecommendationCenterDialog(self.current_recommendations, self)
-        # Connettiamo il segnale della dialog a uno slot della MainWindow
+
         dialog.fic_selected.connect(self._select_fic_from_url)
+        dialog.discover_fics_requested.connect(self._start_discovery_worker)
+        dialog.import_fic_requested.connect(self._start_single_fic_add)
+        dialog.add_to_queue_requested.connect(self._handle_add_to_queue_request)
         dialog.exec()
 
     def _update_welcome_message(self) -> None:
@@ -900,12 +904,10 @@ class MainWindow(QMainWindow):
         fic_count = len(selected_urls)
         fics_in_queue = [url for url in selected_urls if self.fics_in_memory.get(url, {}).get("is_in_reading_queue")]
 
-        # Mostra l'opzione per aggiungere se almeno una delle opere selezionate non è in coda
         if len(fics_in_queue) < fic_count:
             add_to_queue_action = menu.addAction(f"🔖 Add {fic_count} Fic(s) to Reading Queue")
             add_to_queue_action.triggered.connect(self._add_selected_to_queue)
 
-        # Mostra l'opzione per rimuovere se almeno una delle opere selezionate è in coda
         if len(fics_in_queue) > 0:
             remove_from_queue_action = menu.addAction(f"✖️ Remove {len(fics_in_queue)} Fic(s) from Reading Queue")
             remove_from_queue_action.triggered.connect(self._remove_selected_from_queue)
@@ -975,24 +977,21 @@ class MainWindow(QMainWindow):
         Fetches and displays the top recommendation in the 'For You' panel.
         Hides the panel if no suitable recommendations are found.
         """
-        # 1. Trova le opere candidate (quelle "To Read")
+
         fics_to_consider = [fic for fic in self.fics_in_memory.values() if fic["status"] == const.STATUS_TO_READ]
 
         if not fics_to_consider:
             self.recommendation_panel.setVisible(False)
             return
 
-        # 2. Genera la lista di suggerimenti ordinata
         self.current_recommendations = self.analysis_engine.generate_recommendations(fics_to_consider)
 
-        # Filtra via i suggerimenti con punteggio 0 (nessuna corrispondenza)
         self.current_recommendations = [rec for rec in self.current_recommendations if rec["recommendation_score"] > 0]
 
         if not self.current_recommendations:
             self.recommendation_panel.setVisible(False)
             return
 
-        # 3. Mostra il primo suggerimento (o quello corrente dopo uno shuffle)
         self.current_recommendation_index = 0
         self._display_current_recommendation()
         self.recommendation_panel.setVisible(True)
@@ -1020,10 +1019,15 @@ class MainWindow(QMainWindow):
         if not self.current_recommendations:
             return
 
-        # Incrementa l'indice, tornando all'inizio se si raggiunge la fine della lista
         self.current_recommendation_index = (self.current_recommendation_index + 1) % len(self.current_recommendations)
 
         self._display_current_recommendation()
+
+    @pyqtSlot(list)
+    def _handle_add_to_queue_request(self, urls: List[str]) -> None:
+        """Aggiunge una lista di URL alla coda e aggiorna la UI."""
+        add_fics_to_queue(urls)
+        self._refresh_rows_by_url(urls)
 
     def _display_current_recommendation(self) -> None:
         """Updates the UI labels of the recommendation panel with the current recommendation."""
@@ -1031,9 +1035,8 @@ class MainWindow(QMainWindow):
             self.recommendation_panel.setVisible(False)
             return
 
-        # Assicurati che l'indice sia valido
         if not (0 <= self.current_recommendation_index < len(self.current_recommendations)):
-            self.current_recommendation_index = 0  # Torna al primo se l'indice non è valido
+            self.current_recommendation_index = 0
 
         fic = self.current_recommendations[self.current_recommendation_index]
 
@@ -1041,7 +1044,6 @@ class MainWindow(QMainWindow):
         self.recommendation_author.setText(f"by {fic['author']}")
         self.recommendation_score.setText(f"<i>Match Score: {fic['recommendation_score']}</i>")
 
-        # Memorizza l'URL nel pannello per un facile accesso
         self.recommendation_panel.setProperty("fic_url", fic["url"])
 
     def _on_bulk_changes_requested(self, changes: dict) -> None:
@@ -1366,6 +1368,30 @@ class MainWindow(QMainWindow):
                 logger.exception("Database backup failed.")
                 QMessageBox.critical(self, "Backup Failed", f"Error: {e}")
 
+    def _prepare_completer_data(self) -> Dict[str, List[str]]:
+        """
+        Scans all fics in memory to generate unique lists for completer suggestions.
+        """
+        all_fandoms: set[str] = set()
+        all_authors: set[str] = set()
+        all_tags: set[str] = set()
+
+        all_fics_in_db = get_filtered_fics(view_filter="all")
+
+        for fic in all_fics_in_db:
+            if fic.get("fandoms"):
+                all_fandoms.update(t.strip() for t in fic["fandoms"].split(","))
+            if fic.get("author"):
+                all_authors.update(t.strip() for t in fic["author"].split(","))
+            if fic.get("tags"):
+                all_tags.update(t.strip() for t in fic["tags"].split(","))
+
+        return {
+            "fandoms": sorted(list(all_fandoms)),
+            "authors": sorted(list(all_authors)),
+            "tags": sorted(list(all_tags)),
+        }
+
     def _restore_database(self) -> None:
         response = QMessageBox.warning(
             self,
@@ -1672,11 +1698,8 @@ class MainWindow(QMainWindow):
 
         all_fics_raw = get_filtered_fics(view_filter=self.current_view_filter)
 
-        # --- INIZIA NUOVA LOGICA DI SCORING ---
-        # Calcola i punteggi per TUTTE le opere in memoria e li aggiunge ai loro dizionari
         all_fics_scored = self.analysis_engine.generate_recommendations(all_fics_raw)
         self.fics_in_memory = {fic["url"]: fic for fic in all_fics_scored}
-        # --- FINE NUOVA LOGICA DI SCORING ---
 
         fics_to_render = fics_to_display if fics_to_display is not None else list(self.fics_in_memory.values())
 
@@ -1723,19 +1746,16 @@ class MainWindow(QMainWindow):
         Costruisce un "Filter Object" basato sullo stato attuale della UI
         di ricerca e aggiorna la tabella.
         """
-        # 1. Costruisci il Filter Object di base
+
         filters: Dict[str, Any] = {"conditions": {}, "tags": {}, "user_tags": {}}
 
-        # 2. Popola il Filter Object dalla UI
         search_text = self.search_input.text().strip()
         field_idx = self.search_combo.currentIndex()
         status_idx = self.status_filter_combo.currentIndex()
 
-        # Aggiungi il filtro per stato
         if status_idx > 0:
             filters["conditions"]["status"] = self.status_filter_combo.currentText()
 
-        # Mappa per i campi di ricerca
         field_map = {
             0: "all",
             1: "title",
@@ -1751,42 +1771,36 @@ class MainWindow(QMainWindow):
         }
         field_key = field_map.get(field_idx, "all")
 
-        # Popola il filtro in base al campo selezionato
         if search_text:
             if field_key == "tags":
                 filters["tags"]["and"] = [t.strip() for t in search_text.split(",")]
             elif field_key == "user_tags":
                 filters["user_tags"]["and"] = [t.strip() for t in search_text.split(",")]
-            else:  # Tutti gli altri campi, incluso "all"
+            else:
                 filters["conditions"][field_key] = search_text
 
-        # 3. Esegui la ricerca e aggiorna la tabella
         fics_found = get_filtered_fics(view_filter=self.current_view_filter, filters=filters)
         self._update_fics_table(fics_found)
 
     @pyqtSlot()
     def _on_clear_search_clicked(self) -> None:
         """Resets all search and filter controls to their default state."""
-        # Blocchiamo i segnali per evitare di triggerare la ricerca più volte
+
         self.search_input.blockSignals(True)
         self.search_combo.blockSignals(True)
         self.status_filter_combo.blockSignals(True)
         self.saved_filters_combo.blockSignals(True)
 
-        # Resetta i valori dei widget
         self.search_input.clear()
         self.search_combo.setCurrentIndex(0)
         self.status_filter_combo.setCurrentIndex(0)
         self.saved_filters_combo.setCurrentIndex(0)
 
-        # Sblocchiamo i segnali
         self.search_input.blockSignals(False)
         self.search_combo.blockSignals(False)
         self.status_filter_combo.blockSignals(False)
         self.saved_filters_combo.blockSignals(False)
 
-        # Ora che la UI è pulita, triggeriamo manualmente un aggiornamento
-        # per mostrare la lista completa.
         self._on_search_triggered()
 
     @pyqtSlot()
@@ -1987,25 +2001,21 @@ class MainWindow(QMainWindow):
         """
         username = config_manager.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME)
         if not username or username == const.CONFIG_DEFAULT_USER:
-            return  # Don't sync if not logged in
+            return
 
         work_id = int(fic_data["url"].split("/")[-1])
 
-        # This sync runs in the background. We connect its finish signal
-        # to a final update of the analysis engine.
         thread = QThread()
         worker = SyncStatusWorker(work_id, fic_data["url"], username)
         worker.moveToThread(thread)
 
         worker.finished.connect(lambda status, url: self._on_auto_sync_finished(url))
-        worker.error.connect(thread.quit)  # Clean up on error
+        worker.error.connect(thread.quit)
 
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
 
-        # We need to store the thread to prevent it from being garbage collected
-        # A simple list of active threads will do.
         if not hasattr(self, "active_sync_threads"):
             self.active_sync_threads = []
         self.active_sync_threads.append(thread)
@@ -2018,9 +2028,7 @@ class MainWindow(QMainWindow):
         When an auto-sync finishes, get the final fic state and update the engine one last time.
         """
         final_fic_data = get_fic_by_url(url)
-        # To perform an update, we need the "before" state.
-        # We can refetch it from memory, although it won't have the new status.
-        # This is a small inefficiency but ensures correctness.
+
         old_fic_data = self.fics_in_memory.get(url)
         if final_fic_data and old_fic_data:
             self.analysis_engine.update_fic(dict(old_fic_data), final_fic_data)
@@ -2029,16 +2037,13 @@ class MainWindow(QMainWindow):
         if not self.selected_url:
             return
 
-        # --> ADD THIS LINE <--
         old_fic_data = dict(self.fics_in_memory[self.selected_url])
 
         update_fic_status(self.selected_url, new_status, verified)
 
-        # --> ADD THIS BLOCK <--
         new_fic_data = get_fic_by_url(self.selected_url)
         if new_fic_data:
             self.analysis_engine.update_fic(old_fic_data, new_fic_data)
-        # --> END BLOCK <--
 
         fresh_fic_data = get_fic_by_url(self.selected_url)
         if fresh_fic_data:
@@ -2437,9 +2442,7 @@ class MainWindow(QMainWindow):
         """Opens the Dashboard window, passing the analysis engine instance."""
         dialog = DashboardWindow(self.analysis_engine, self)
 
-        # INIZIA LA MODIFICA: Chiama il nuovo metodo per caricare i dati e costruire l'UI
         dialog.load_data_and_build_ui()
-        # FINE DELLA MODIFICA
 
         dialog.exec()
 
@@ -2504,22 +2507,18 @@ class MainWindow(QMainWindow):
             if ok and filter_name:
                 try:
                     save_filter(filter_name, json.dumps(filters))
-                    self._load_saved_filters()  # Ricarica il ComboBox
+                    self._load_saved_filters()
                 except Exception:
                     QMessageBox.warning(self, "Error", f"A filter named '{filter_name}' already exists.")
-                    return  # Interrompe l'operazione se il salvataggio fallisce
+                    return
             elif not ok:
-                return  # Interrompe se l'utente annulla il salvataggio
+                return
 
-        # Resetta la UI di ricerca prima di applicare il nuovo filtro
         self._on_clear_search_clicked()
 
-        # Esegui la ricerca con il filtro avanzato
         fics_found = get_filtered_fics(view_filter=self.current_view_filter, filters=filters)
         self._update_fics_table(fics_found)
 
-        # Tenta di popolare la UI di ricerca semplice per dare un feedback
-        # (Questa è una best-effort e potrebbe non rappresentare filtri complessi)
         self.search_input.blockSignals(True)
         self.search_input.setText("[Advanced Filter Active]")
         self.search_input.blockSignals(False)
@@ -2655,7 +2654,7 @@ class MainWindow(QMainWindow):
             return
 
         add_fics_to_queue(urls)
-        self._refresh_rows_by_url(urls)  # Aggiornamento mirato della UI
+        self._refresh_rows_by_url(urls)
 
     def _remove_selected_from_queue(self) -> None:
         """Removes all currently selected fics from the reading queue."""
@@ -2664,7 +2663,7 @@ class MainWindow(QMainWindow):
             return
 
         remove_fics_from_queue(urls)
-        self._refresh_rows_by_url(urls)  # Aggiornamento mirato della UI
+        self._refresh_rows_by_url(urls)
 
     def _refresh_rows_by_url(self, urls: List[str]) -> None:
         """
@@ -2672,15 +2671,13 @@ class MainWindow(QMainWindow):
         doing a full reload, preserving user selection and scroll position.
         """
         for url in urls:
-            # Recupera i dati freschi dal DB
+
             fresh_fic_data = get_fic_by_url(url)
             if not fresh_fic_data:
                 continue
 
-            # Aggiorna la cache in memoria
             self.fics_in_memory[url] = fresh_fic_data
 
-            # Trova la riga e la ripopola
             row_index = self._find_row_by_url(url)
             if row_index is not None:
                 self._populate_table_row(row_index, fresh_fic_data)
@@ -2689,7 +2686,7 @@ class MainWindow(QMainWindow):
         """Opens the dedicated dialog for managing the reading queue."""
         dialog = ReadingQueueDialog(self)
         dialog.fic_selected.connect(self._select_fic_from_url)
-        dialog.queue_changed.connect(self._refresh_rows_by_url)  # Aggiorna le righe modificate
+        dialog.queue_changed.connect(self._refresh_rows_by_url)
         dialog.exec()
 
     def _load_saved_filters(self) -> None:
@@ -2700,16 +2697,16 @@ class MainWindow(QMainWindow):
 
         filters = get_all_filters()
         for f in filters:
-            # Aggiungiamo sia il nome che l'ID e i dati al ComboBox
+
             self.saved_filters_combo.addItem(f["name"], userData=f)
 
         self.saved_filters_combo.blockSignals(False)
 
     def _on_save_filter_clicked(self) -> None:
         """Salva lo stato corrente dei filtri come un nuovo filtro."""
-        # Costruisci l'oggetto filtro dalla UI, come in _on_search_triggered
+
         filters: Dict[str, Any] = {"conditions": {}, "tags": {}, "user_tags": {}}
-        # (Qui potremmo riutilizzare la logica per costruire il filtro, ma per ora la duplichiamo per chiarezza)
+
         search_text = self.search_input.text().strip()
         field_idx = self.search_combo.currentIndex()
         status_idx = self.status_filter_combo.currentIndex()
@@ -2737,14 +2734,13 @@ class MainWindow(QMainWindow):
             else:
                 filters["conditions"][field_key] = search_text
 
-        # Chiedi un nome all'utente
         filter_name, ok = QInputDialog.getText(self, "Save Filter", "Enter a name for this filter:")
         if ok and filter_name:
             try:
-                # Salva nel DB
+
                 save_filter(filter_name, json.dumps(filters))
                 QMessageBox.information(self, "Success", f"Filter '{filter_name}' saved.")
-                self._load_saved_filters()  # Ricarica il ComboBox
+                self._load_saved_filters()
             except Exception:
                 QMessageBox.warning(self, "Error", f"A filter named '{filter_name}' already exists.")
 
@@ -2753,7 +2749,7 @@ class MainWindow(QMainWindow):
         Applica un filtro salvato selezionato dal ComboBox, aggiornando
         visibilmente tutti i controlli della UI per riflettere il filtro attivo.
         """
-        if index == 0:  # Ignora l'opzione "placeholder"
+        if index == 0:
             return
 
         filter_data = self.saved_filters_combo.itemData(index)
@@ -2766,33 +2762,25 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to parse saved filter data: {filter_data['filter_data']}")
             return
 
-        # --- INIZIA LA LOGICA DI AGGIORNAMENTO UI ---
-
-        # 1. Blocchiamo i segnali per evitare di triggerare la ricerca più volte
-        #    mentre modifichiamo i controlli.
         self.search_input.blockSignals(True)
         self.search_combo.blockSignals(True)
         self.status_filter_combo.blockSignals(True)
 
-        # 2. Resetta la UI a uno stato pulito prima di applicare i nuovi valori.
         self.search_input.clear()
         self.search_combo.setCurrentIndex(0)
         self.status_filter_combo.setCurrentIndex(0)
 
-        # 3. Applica i valori salvati alla UI
         conditions = filters.get("conditions", {})
         tags_filter = filters.get("tags", {})
         user_tags_filter = filters.get("user_tags", {})
 
-        # Applica il filtro per stato
         if "status" in conditions:
-            # Trova l'indice del testo e lo imposta, è più robusto del solo testo
+
             status_index = self.status_filter_combo.findText(conditions["status"])
             if status_index != -1:
                 self.status_filter_combo.setCurrentIndex(status_index)
-            conditions.pop("status")  # Rimuovi per non processarlo dopo
+            conditions.pop("status")
 
-        # Mappa inversa per trovare l'indice del campo di ricerca
         field_map_inv = {
             "all": 0,
             "title": 1,
@@ -2805,9 +2793,6 @@ class MainWindow(QMainWindow):
             "series_name": 10,
         }
 
-        # Cerca la condizione principale (testo + campo)
-        # Questa logica assume che i filtri salvati dalla UI semplice abbiano UNA sola condizione testuale.
-        # Sarà da espandere quando avremo il Filter Builder.
         found_main_search = False
         for field, value in conditions.items():
             if field in field_map_inv:
@@ -2816,32 +2801,103 @@ class MainWindow(QMainWindow):
                 found_main_search = True
                 break
 
-        # Se la ricerca principale era sui tag
         if not found_main_search:
             if tags_filter.get("and"):
-                self.search_combo.setCurrentIndex(5)  # Indice di "Tags"
+                self.search_combo.setCurrentIndex(5)
                 self.search_input.setText(", ".join(tags_filter["and"]))
             elif user_tags_filter.get("and"):
-                self.search_combo.setCurrentIndex(9)  # Indice di "Your Tags"
+                self.search_combo.setCurrentIndex(9)
                 self.search_input.setText(", ".join(user_tags_filter["and"]))
 
-        # 4. Sblocca i segnali
         self.search_input.blockSignals(False)
         self.search_combo.blockSignals(False)
         self.status_filter_combo.blockSignals(False)
 
-        # 5. Esegui la ricerca con i nuovi valori della UI
         self._on_search_triggered()
 
-        # 6. Resetta il ComboBox dei filtri salvati per indicare che l'azione è finita
         self.saved_filters_combo.setCurrentIndex(0)
 
+    def _open_author_recs_dialog(self):
+        dialog = AuthorRecsDialog(self)
+        dialog.reroll_requested.connect(lambda: self._start_author_recs_worker(dialog))
+        dialog.import_fic_requested.connect(self._start_single_fic_add)
+        dialog.add_to_queue_requested.connect(self._handle_add_to_queue_request)
+
+        dialog.finished.connect(self._stop_author_recs_worker)
+
+        self._start_author_recs_worker(dialog)
+        dialog.exec()
+
+    def _start_author_recs_worker(self, dialog: AuthorRecsDialog):
+        if self.author_recs_thread and self.author_recs_thread.isRunning():
+            return
+
+        dialog.on_loading()
+
+        self.author_recs_thread = QThread()
+        self.author_recs_worker = AuthorRecsWorker(self.analysis_engine)
+        self.author_recs_worker.moveToThread(self.author_recs_thread)
+
+        self.author_recs_worker.finished.connect(dialog.on_results_ready)
+        self.author_recs_worker.error.connect(dialog.on_error)
+
+        self.author_recs_worker.finished.connect(self.author_recs_thread.quit)
+
+        self.author_recs_thread.finished.connect(lambda: setattr(self, "author_recs_thread", None))
+
+        self.author_recs_thread.started.connect(self.author_recs_worker.run)
+        self.author_recs_thread.start()
+
+    def _stop_author_recs_worker(self):
+        if self.author_recs_worker:
+            self.author_recs_worker.stop()
+
     def _open_filter_builder(self) -> None:
-        """Apre il Costruttore di Filtri e gestisce il suo output."""
-        dialog = FilterBuilderDialog(self)
-        # Connettiamo il segnale della dialog a un nuovo slot
+        """Apre il Costruttore di Filtri, passando i dati per i suggerimenti."""
+
+        completer_data = self._prepare_completer_data()
+        dialog = FilterBuilderDialog(completer_data, self)
+
         dialog.filter_generated.connect(self._apply_advanced_filter)
         dialog.exec()
+
+    def _start_discovery_worker(self, search_params: Dict[str, Any]) -> None:
+        """Avvia il worker per la scoperta di nuove opere su AO3."""
+        if self.discovery_thread and self.discovery_thread.isRunning():
+            QMessageBox.warning(self, "In Progress", "A discovery process is already running. Please wait.")
+            return
+
+        self.discovery_thread = QThread()
+        self.discovery_worker = DiscoverFicsWorker(self.analysis_engine, search_params)
+        self.discovery_worker.moveToThread(self.discovery_thread)
+
+        self.discovery_worker.finished.connect(self._on_discovery_finished)
+        self.discovery_worker.error.connect(self._on_discovery_error)
+
+        self.discovery_worker.finished.connect(self.discovery_thread.quit)
+        self.discovery_worker.finished.connect(self.discovery_worker.deleteLater)
+        self.discovery_thread.finished.connect(self.discovery_thread.deleteLater)
+        self.discovery_thread.finished.connect(lambda: setattr(self, "discovery_thread", None))
+
+        self.discovery_thread.started.connect(self.discovery_worker.run)
+        self.discovery_thread.start()
+
+    @pyqtSlot(list)
+    def _on_discovery_finished(self, results: List[Dict[str, Any]]) -> None:
+        """Riceve i risultati dal worker e li passa alla finestra di dialogo."""
+
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, RecommendationCenterDialog):
+                widget.on_discovery_finished(results)
+                break
+
+    @pyqtSlot(str)
+    def _on_discovery_error(self, message: str) -> None:
+        """Riceve un errore dal worker e lo passa alla finestra di dialogo."""
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, RecommendationCenterDialog):
+                widget.on_discovery_error(message)
+                break
 
 
 if __name__ == "__main__":

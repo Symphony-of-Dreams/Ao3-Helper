@@ -113,7 +113,7 @@ class Achievement(BaseModel):
 class SavedFilter(BaseModel):
     id = AutoField()
     name = CharField(unique=True)
-    filter_data = TextField()  # Salveremo i filtri come stringa JSON
+    filter_data = TextField()
 
     class Meta:
         table_name = "saved_filters"

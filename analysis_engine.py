@@ -17,8 +17,7 @@ class AnalysisEngine:
     """
 
     def __init__(self):
-        # Internal cache for all scores.
-        # Structure: {'entity_name': {'tws': float, 'fic_count': int}}
+
         self.author_scores: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"tws": 0.0, "fic_count": 0})
         self.fandom_scores: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"tws": 0.0, "fic_count": 0})
         self.tag_scores: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"tws": 0.0, "fic_count": 0})
@@ -35,7 +34,6 @@ class AnalysisEngine:
     def _calculate_fic_scores(self, fic_data: Dict[str, Any]) -> Tuple[float, float]:
         """Calculates the two types of scores for a given fic."""
 
-        # 1. Base Score (Engagement + Intent)
         engagement_score = 0.0
         if fic_data.get("is_in_history") and fic_data.get("visit_count", 0) > 0:
             visit_count = fic_data.get("visit_count", 1)
@@ -44,17 +42,14 @@ class AnalysisEngine:
         intent_score = 1.5 if fic_data.get("is_in_library") else 0.0
         base_score = engagement_score + intent_score
 
-        # 2. Status Multiplier
         status = fic_data.get("status", "To Read")
         status_map = {"Read": 1.1, "Kudosed": 1.25, "Commented": 1.5}
         status_multiplier = status_map.get(status, 1.0)
 
-        # 3. Rating Multiplier (for author score only)
         rating = fic_data.get("user_rating", 0) or 0
         rating_map = {1: 0.4, 2: 0.7, 3: 1.0, 4: 1.2, 5: 1.5}
         rating_multiplier = rating_map.get(rating, 1.0)
 
-        # 4. Final Scores
         entity_score = base_score * status_multiplier
         author_score = entity_score * rating_multiplier
 
@@ -66,14 +61,12 @@ class AnalysisEngine:
 
         multiplier = 1 if operation == "add" else -1
 
-        # Update author score
         if fic_data.get("author"):
             authors = [a.strip() for a in fic_data["author"].split(",") if a.strip()]
             for author_name in authors:
                 self.author_scores[author_name]["tws"] += author_score * multiplier
                 self.author_scores[author_name]["fic_count"] += 1 * multiplier
 
-        # Update scores for all other entities
         for scores_dict, key in self.entity_map:
             if fic_data.get(key):
                 items = [item.strip() for item in fic_data[key].split(",") if item.strip()]
@@ -85,7 +78,6 @@ class AnalysisEngine:
         """Performs a full analysis of all fics in the database. Should be called on startup."""
         all_fics = get_filtered_fics(view_filter="all")
 
-        # Reset all scores
         self.author_scores.clear()
         self.fandom_scores.clear()
         self.tag_scores.clear()
@@ -133,8 +125,6 @@ class AnalysisEngine:
 
         return final_analysis
 
-    # --- INSERISCI IL NUOVO METODO QUI ---
-
     def generate_recommendations(self, fics_to_consider: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Calculates a 'recommendation score' for a list of candidate fics based on
@@ -149,7 +139,6 @@ class AnalysisEngine:
         """
         recommendations = []
 
-        # Map the fic data keys to the engine's score caches for easy iteration.
         entity_mappings = [
             ("author", self.author_scores),
             ("fandoms", self.fandom_scores),
@@ -161,25 +150,20 @@ class AnalysisEngine:
         for fic in fics_to_consider:
             recommendation_score = 0.0
 
-            # Iterate through each type of entity (author, fandoms, etc.) for the fic.
             for fic_key, score_cache in entity_mappings:
                 entity_string = fic.get(fic_key)
 
-                # If the entity string exists (e.g., 'Fandom A, Fandom B')
                 if entity_string:
-                    # Split into individual items and strip whitespace.
+
                     items = [item.strip() for item in entity_string.split(",") if item.strip()]
 
                     for item_name in items:
-                        # Safely get the TWS from the cache. If an entity is not in the
-                        # cache, it contributes 0 to the score.
+
                         score_data = score_cache.get(item_name, {"tws": 0.0})
                         recommendation_score += score_data["tws"]
 
-            # Create a copy of the fic dictionary and add the calculated score.
             fic_with_score = fic.copy()
             fic_with_score["recommendation_score"] = round(recommendation_score, 2)
             recommendations.append(fic_with_score)
 
-        # Sort the final list by the new score in descending order.
         return sorted(recommendations, key=lambda x: x["recommendation_score"], reverse=True)

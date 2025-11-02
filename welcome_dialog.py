@@ -1,6 +1,6 @@
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -18,14 +18,25 @@ from ao3_manager import ao3_client
 from config_manager import config_manager
 
 
+class LoginWorker(QObject):
+    finished = pyqtSignal()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        """Attempts to reload the AO3 session."""
+        ao3_client.reload_session()
+        self.finished.emit()
+
+
 class WelcomeDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Welcome to AO3 Helper!")
         self.setMinimumWidth(500)
 
-        main_layout = QVBoxLayout(self)
+        self.login_thread: Optional[QThread] = None
 
+        main_layout = QVBoxLayout(self)
         main_layout.addWidget(QLabel("<h2>Welcome to AO3 Helper!</h2>"))
         main_layout.addWidget(QLabel("To get the most out of the application, you can log in with your AO3 account."))
 
@@ -34,16 +45,12 @@ class WelcomeDialog(QDialog):
         privacy_button.setCursor(Qt.CursorShape.PointingHandCursor)
         privacy_button.clicked.connect(self._show_privacy_info)
         main_layout.addWidget(privacy_button)
-
         main_layout.addSpacing(15)
-
         main_layout.addWidget(QLabel("<b>How it works:</b>"))
         explanation = (
             "<ul>"
             "<li><b>Guest (no login):</b> Add fics manually and manage your local library.</li>"
             "<li><b>Username only:</b> Automatically sync Kudos & Comment status.</li>"
-            "<li><b>Username + Password:</b> All of the above, plus access locked fics and import your AO3 bookmarks & history.</li>"  # noqa: E501
-            "</ul>"
         )
         main_layout.addWidget(QLabel(explanation))
 
@@ -73,26 +80,38 @@ class WelcomeDialog(QDialog):
             "<h3>Your Data Stays With You. Period.</h3>"
             "<p>This application is designed with a 'privacy-first' principle:</p>"
             "<ul>"
-            "<li><b>100% Local:</b> All your data (fic list, notes, ratings, credentials) is stored ONLY on your computer in the 'ao3_helper.db' and 'config.ini' files. Nothing is ever sent to a third-party server.</li>"  # noqa: E501
-            "<li><b>Direct to AO3:</b> The app only communicates directly with Archive of Our Own's servers, just like your web browser would.</li>"  # noqa: E501
-            "<li><b>Purpose-Driven:</b> Your username is used to check for your kudos/comments on fics. Your password is used to authenticate a session to access locked works and your personal bookmarks/history. It is stored locally and not used for any other purpose.</li>"  # noqa: E501
+            "<li><b>100% Local:</b> All your data is stored ONLY on your computer. Nothing is ever sent to a third-party server.</li>"  # noqa: E501
+            "<li><b>Direct to AO3:</b> The app only communicates directly with Archive of Our Own's servers, just like your web browser.</li>"  # noqa: E501
+            "<li><b>Purpose-Driven:</b> Your password is only used to authenticate a session to access locked works and your personal data like bookmarks.</li>"  # noqa: E501
             "</ul>",
         )
 
     def _save_and_connect(self) -> None:
-        """Salva le credenziali e tenta il login."""
-        config_manager.set(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME, self.user_input.text().strip())
+        """Saves credentials and attempts to connect in a background thread."""
+        username = self.user_input.text().strip()
+        password = self.pass_input.text()
+
+        final_username = username or const.ConfigCreds.DEFAULT_USER
+        config_manager.set(const.ConfigSections.CREDS, const.ConfigCreds.USERNAME, final_username)
         config_manager.save_config()
 
-        password = self.pass_input.text()
         if password:
-            security_manager.set_password(self.user_input.text().strip(), password)
+            security_manager.set_password(final_username, password)
         else:
-            security_manager.delete_password(self.user_input.text().strip())
+            security_manager.delete_password(final_username)
 
-        ao3_client.reload_session()
-        self.accept()
+        self.save_button.setEnabled(False)
+        self.save_button.setText("Connecting...")
+        self.guest_button.setEnabled(False)
+
+        self.login_thread = QThread()
+        worker = LoginWorker()
+        worker.moveToThread(self.login_thread)
+        worker.finished.connect(self.accept)
+        self.login_thread.started.connect(worker.run)
+        self.login_thread.finished.connect(self.login_thread.deleteLater)
+        self.login_thread.start()
 
     def _proceed_as_guest(self) -> None:
-        """Procede senza salvare credenziali."""
-        self.reject()
+        """Proceeds without saving credentials."""
+        self.accept()

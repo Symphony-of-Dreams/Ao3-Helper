@@ -46,12 +46,8 @@ class DashboardWindow(QDialog):
 
         self.analysis_engine = analysis_engine
 
-        # --- MODIFICA CHIAVE ---
-        # I dati vengono inizializzati come vuoti. Verranno caricati
-        # dal metodo load_data_and_build_ui() prima di mostrare la finestra.
         self.analysis_data: Dict[str, List[Dict[str, Any]]] = {}
         self.chart_data: Dict[str, Any] = {}
-        # --- FINE MODIFICA ---
 
         self.current_mask_array: Optional[np.ndarray] = None
         self.last_generated_cloud_image: Optional[Image.Image] = None
@@ -77,32 +73,25 @@ class DashboardWindow(QDialog):
         self.tabs.addTab(self.analysis_tab, "🧠 True Favorites Analysis")
         self.tabs.addTab(self.wordcloud_tab, "☁️ Pro Word Clouds")
 
-        # Le chiamate per costruire le schede sono state spostate nel nuovo metodo.
-
-    # --- NUOVO METODO ---
     def load_data_and_build_ui(self) -> None:
         """
         Recupera i dati più recenti dal motore di analisi e dal database,
         quindi costruisce i componenti dell'interfaccia utente che dipendono da tali dati.
         """
-        # --- DEBUG PRINT 4 ---
+
         logger.debug("DEBUG: DashboardWindow.load_data_and_build_ui() CHIAMATA.")
 
         self.analysis_data = self.analysis_engine.get_analysis_results()
         self.chart_data = get_data_for_charts(chart_filter="lette")
 
-        # --- DEBUG PRINT 5 ---
         author_count = len(self.analysis_data.get("authors", []))
         logger.debug(f"DEBUG: Dati ricevuti dalla dashboard. Conteggio autori: {author_count}.")
         if author_count > 0:
             logger.debug(f"DEBUG: Esempio dati autori ricevuti: {self.analysis_data['authors'][:3]}")
 
-        # Ora che abbiamo i dati, costruiamo le schede.
         self._build_overview_tab()
         self._build_analysis_tab()
         self._build_wordcloud_tab()
-
-    # --- FINE NUOVO METODO ---
 
     def _build_overview_tab(self) -> None:
         layout = QVBoxLayout(self.overview_tab)
@@ -373,11 +362,7 @@ class DashboardWindow(QDialog):
         fig.subplots_adjust(left=0.1, right=0.6)
         ax = fig.add_subplot(111)
 
-        # --- INIZIO DELLA CORREZIONE ---
-        # Aggiungiamo `*_` per catturare eventuali valori extra restituiti da ax.pie
-        # Questo rende il codice compatibile con diverse versioni di Matplotlib.
         wedges, *_ = ax.pie(values, startangle=90, textprops={"color": "w"})
-        # --- FINE DELLA CORREZIONE ---
 
         ax.axis("equal")
         ax.legend(
@@ -418,7 +403,6 @@ class DashboardWindow(QDialog):
         date_choice = date_filter_map.get(self.date_filter_combo.currentIndex(), "date_updated")
         data = get_activity_by_month(view_filter=view_choice, date_field=date_choice)
 
-        # Pulisce il grafico precedente
         for i in reversed(range(self.chart_layout.count())):
             item = self.chart_layout.itemAt(i)
             if item:
@@ -426,23 +410,17 @@ class DashboardWindow(QDialog):
                 if widget:
                     widget.setParent(None)
 
-        # Controlla se ci sono dati
         if not data:
             self.chart_layout.addWidget(QLabel("<i>No data available for the selected filters.</i>"))
             return
 
-        # --- INIZIO BLOCCO CORRETTO PER MYPY ---
-        # Controlla che i dati abbiano la forma corretta (lista di tuple con 2 elementi)
         if not all(isinstance(item, (list, tuple)) and len(item) == 2 for item in data):
             self.chart_layout.addWidget(QLabel("<i>Data is present but invalid for charting.</i>"))
             return
 
-        # Estrae i dati in modo esplicito usando list comprehension, che Mypy capisce.
         months = [item[0] for item in data]
         counts = [item[1] for item in data]
-        # --- FINE BLOCCO CORRETTO PER MYPY ---
 
-        # Crea il nuovo grafico
         fig = Figure(figsize=(10, 5), dpi=100)
         ax = fig.add_subplot(111)
         ax.bar(months, counts, color="#007acc")

@@ -18,27 +18,24 @@ from database import get_reading_queue, remove_fics_from_queue, update_queue_ord
 
 
 class ReadingQueueDialog(QDialog):
-    # Segnali per comunicare con la MainWindow
-    queue_changed = pyqtSignal(list)  # Emette la lista di URL modificati
-    fic_selected = pyqtSignal(str)  # Emette l'URL di un'opera da selezionare
+
+    queue_changed = pyqtSignal(list)
+    fic_selected = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("📚 Reading Queue")
         self.setMinimumSize(600, 450)
 
-        # Layout principale
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(QLabel("Drag and drop fics to set your reading order."))
 
-        # Lista delle opere
         self.queue_list = QListWidget()
         self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.queue_list.setStyleSheet("QListWidget::item { padding: 5px; }")
         main_layout.addWidget(self.queue_list)
 
-        # Pulsanti di azione
         button_layout = QHBoxLayout()
         self.select_button = QPushButton("Select in Library")
         self.remove_button = QPushButton("Remove from Queue")
@@ -50,7 +47,6 @@ class ReadingQueueDialog(QDialog):
         button_layout.addWidget(self.close_button)
         main_layout.addLayout(button_layout)
 
-        # Connessioni dei segnali
         self.queue_list.model().rowsMoved.connect(self._on_order_changed)
         self.queue_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.queue_list.itemDoubleClicked.connect(self._on_select_button_clicked)
@@ -59,7 +55,6 @@ class ReadingQueueDialog(QDialog):
         self.remove_button.clicked.connect(self._on_remove_button_clicked)
         self.close_button.clicked.connect(self.accept)
 
-        # Carica i dati iniziali
         self._load_queue()
         self._on_selection_changed()
 
@@ -68,13 +63,12 @@ class ReadingQueueDialog(QDialog):
         self.queue_list.clear()
         fics = get_reading_queue()
         for fic in fics:
-            # --- INIZIA MODIFICA ---
-            # Creiamo una singola stringa di testo pulita
+
             item_text = f"{fic.get('title', 'N/A')}  —  by {fic.get('author', 'N/A')}"
 
-            item = QListWidgetItem(item_text)  # Impostiamo il testo direttamente
-            item.setData(Qt.ItemDataRole.UserRole, fic["url"])  # Memorizza l'URL
-            item.setToolTip(item_text)  # Aggiungiamo un tooltip per i titoli lunghi
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, fic["url"])
+            item.setToolTip(item_text)
 
             self.queue_list.addItem(item)
 
@@ -85,11 +79,11 @@ class ReadingQueueDialog(QDialog):
         for i in range(self.queue_list.count()):
             item = self.queue_list.item(i)
             url = item.data(Qt.ItemDataRole.UserRole)
-            updates.append((url, i + 1))  # L'ordine è 1-based
+            updates.append((url, i + 1))
             urls_affected.append(url)
 
         update_queue_order(updates)
-        self.queue_changed.emit(urls_affected)  # Notifica la MainWindow
+        self.queue_changed.emit(urls_affected)
 
     def _on_selection_changed(self) -> None:
         """Abilita/disabilita i pulsanti in base alla selezione."""
@@ -105,7 +99,7 @@ class ReadingQueueDialog(QDialog):
 
         url = selected_items[0].data(Qt.ItemDataRole.UserRole)
         self.fic_selected.emit(url)
-        self.accept()  # Chiude la finestra
+        self.accept()
 
     def _on_remove_button_clicked(self) -> None:
         """Rimuove le opere selezionate dalla coda."""
@@ -125,5 +119,5 @@ class ReadingQueueDialog(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             urls_to_remove = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
             remove_fics_from_queue(urls_to_remove)
-            self.queue_changed.emit(urls_to_remove)  # Notifica la MainWindow
-            self._load_queue()  # Ricarica la lista per mostrare i cambiamenti
+            self.queue_changed.emit(urls_to_remove)
+            self._load_queue()

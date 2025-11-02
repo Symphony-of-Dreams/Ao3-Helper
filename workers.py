@@ -1,3 +1,4 @@
+import random
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, cast
 
@@ -6,10 +7,12 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from wordcloud import WordCloud
 
 import constants as const
+from analysis_engine import AnalysisEngine
 from ao3_manager import ao3_client
 from config_manager import config_manager
 from database import Fic, add_fic, add_or_update_fic_from_history, get_existing_urls, update_fic_status
 from logger_setup import logger
+from query_builder import build_discovery_query
 
 if TYPE_CHECKING:
     from analysis_engine import AnalysisEngine
@@ -419,8 +422,8 @@ class ExportWorker(QObject):
     in a background thread, preventing the UI from freezing.
     """
 
-    finished = pyqtSignal(str)  # Emits the final filepath on success
-    error = pyqtSignal(str)  # Emits an error message on failure
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
 
     def __init__(self, frequencies: Dict[str, float], options: Dict[str, Any], filepath: str, file_format: str):
         super().__init__()
@@ -436,7 +439,6 @@ class ExportWorker(QObject):
             if not self.frequencies:
                 raise ValueError("No frequency data provided to generate the word cloud.")
 
-            # Generate the WordCloud object with the provided options
             wc = WordCloud(
                 width=self.options.get("width", 1200),
                 height=self.options.get("height", 800),
@@ -450,7 +452,6 @@ class ExportWorker(QObject):
                 relative_scaling=self.options.get("relative_scaling", 0.5),
             ).generate_from_frequencies(self.frequencies)
 
-            # Export to the chosen format
             if self.file_format == "png":
                 wc.to_file(self.filepath)
             elif self.file_format == "svg":
@@ -473,11 +474,8 @@ class AnalysisWorker(QObject):
 
     finished = pyqtSignal()
 
-    # --- INIZIO MODIFICHE ---
-    # Ora usiamo "AnalysisEngine" tra virgolette per il type hint,
-    # che è il modo corretto per gestire le forward reference in Python.
     def __init__(self, analysis_engine: "AnalysisEngine"):
-        # --- FINE MODIFICHE ---
+
         super().__init__()
         self.analysis_engine = analysis_engine
 
@@ -491,6 +489,174 @@ class AnalysisWorker(QObject):
         except Exception as e:
             logger.exception(f"A critical error occurred during full analysis: {e}")
         finally:
-            # Emits the 'finished' signal in any case (success or failure),
-            # to always unblock the UI.
+
             self.finished.emit()
+
+
+class DiscoverFicsWorker(QObject):
+    """
+    Orchestra la scoperta di nuove opere basata su query, delegando la costruzione
+    della logica di ricerca al modulo query_builder.
+    """
+
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, analysis_engine: "AnalysisEngine", search_params: Dict[str, Any]):
+        super().__init__()
+        self.analysis_engine = analysis_engine
+        self.search_params = search_params
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            logger.info("--- DiscoverFicsWorker (Refactored) START ---")
+
+            profile = self.analysis_engine.get_analysis_results()
+
+            search_query = build_discovery_query(profile, self.search_params)
+
+            logger.info("Executing AO3 search via Query Builder...")
+            search_query.update()
+            logger.info(f"AO3 search returned {len(search_query.results)} initial results.")
+
+            existing_urls = get_existing_urls()
+            candidates = []
+            for result in search_query.results:
+                if len(candidates) >= 5:
+                    break
+                if result.url not in existing_urls:
+                    candidates.append((result.url, result))
+
+            logger.info(f"Found {len(candidates)} new candidates after filtering.")
+            if not candidates:
+                self.finished.emit([])
+                return
+
+            logger.info(f"Fetching full metadata for {len(candidates)} candidates as GUEST...")
+            fetched_fics = []
+            for i, (url, work_obj) in enumerate(candidates):
+                logger.debug(f"Processing ({i+1}/{len(candidates)}): {url}")
+                try:
+                    work_obj._requester = ao3_client.guest_requester
+                    work_obj.reload()
+                    data = {
+                        "url": work_obj.url,
+                        "title": work_obj.title,
+                        "author": ", ".join(a.username for a in work_obj.authors),
+                        "summary": work_obj.summary,
+                        "rating": ", ".join(work_obj.rating) if isinstance(work_obj.rating, list) else work_obj.rating,
+                        "fandoms": ", ".join(work_obj.fandoms),
+                        "tags": ", ".join(work_obj.tags),
+                        "word_count": work_obj.words,
+                        "relationships": ", ".join(work_obj.relationships),
+                        "kudos": work_obj.kudos,
+                    }
+                    fetched_fics.append(data)
+                except Exception as e:
+                    logger.error(f"Failed to fetch full metadata for {url}: {e}")
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
+
+            logger.info("Scoring and sorting final candidates...")
+            scored_recommendations = self.analysis_engine.generate_recommendations(fetched_fics)
+
+            self.finished.emit(scored_recommendations)
+            logger.info(f"--- DiscoverFicsWorker END --- Found {len(scored_recommendations)} new recommendations.")
+
+        except Exception as e:
+            logger.exception("CRITICAL ERROR in DiscoverFicsWorker.")
+            self.error.emit(str(e))
+
+
+class AuthorRecsWorker(QObject):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, analysis_engine: "AnalysisEngine"):
+        super().__init__()
+        self.analysis_engine = analysis_engine
+        self._is_running = True
+
+    def stop(self):
+        self._is_running = False
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            logger.info("--- AuthorRecsWorker v2 START ---")
+            profile = self.analysis_engine.get_analysis_results()
+
+            author_pool = profile.get("authors", [])[:5]
+            if len(author_pool) < 3:
+                raise ValueError("Not enough author data in profile (need at least 3).")
+
+            author_names = [a["name"] for a in author_pool]
+            author_weights = [a["tws"] for a in author_pool]
+
+            selected_authors = []
+
+            temp_names = list(author_names)
+            temp_weights = list(author_weights)
+
+            for _ in range(3):
+                if not temp_names:
+                    break
+
+                chosen_author = random.choices(temp_names, weights=temp_weights, k=1)[0]
+                selected_authors.append(chosen_author)
+
+                idx_to_remove = temp_names.index(chosen_author)
+                temp_names.pop(idx_to_remove)
+                temp_weights.pop(idx_to_remove)
+
+            logger.info(f"Selected authors for curation: {selected_authors}")
+
+            existing_urls = get_existing_urls()
+            all_candidates = []
+            for author_name in selected_authors:
+                if not self._is_running:
+                    break
+                logger.info(f"Fetching random bookmarks from: {author_name}")
+
+                bookmarked_ids = ao3_client.get_random_bookmarks_from_author(author_name, num_to_sample=5)
+
+                for work_id in bookmarked_ids:
+                    url = f"https://archiveofourown.org/works/{work_id}"
+                    if url not in existing_urls:
+                        all_candidates.append({"url": url, "recommended_by": author_name})
+
+            if not self._is_running or not all_candidates:
+                self.finished.emit([])
+                return
+
+            logger.info(f"Fetching metadata for {len(all_candidates)} total candidates...")
+            fetched_fics = []
+            for candidate in all_candidates:
+                if not self._is_running:
+                    break
+                data = ao3_client.fetch_fic_data(candidate["url"])
+                if data:
+                    data["recommended_by"] = candidate["recommended_by"]
+                    fetched_fics.append(data)
+                time.sleep(const.DEFAULT_REQUEST_DELAY)
+
+            if not self._is_running:
+                self.finished.emit([])
+                return
+
+            scored_recs = self.analysis_engine.generate_recommendations(fetched_fics)
+
+            final_results = []
+            processed_authors = set()
+            for fic in scored_recs:
+                recommender = fic["recommended_by"]
+                if recommender not in processed_authors:
+                    final_results.append(fic)
+                    processed_authors.add(recommender)
+
+            self.finished.emit(final_results)
+            logger.info(f"--- AuthorRecsWorker END --- Final recommendations: {len(final_results)}")
+
+        except Exception as e:
+            logger.exception("CRITICAL ERROR in AuthorRecsWorker.")
+            self.error.emit(str(e))

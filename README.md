@@ -4,42 +4,62 @@
 
 **AO3 Helper** is your personal desktop archive and reading toolkit for Archive of Our Own (AO3), designed for power readers who want to go beyond browser bookmarks and gain full control over their fanfiction library.
 
-![AO3 Helper Demo GIF](assets/demo.gif)
+
 
 ## Core Philosophy: Your Data is Yours. Period.
 
 This application was built with a "privacy-first" principle. We believe you should have complete ownership of your reading data.
 
 *   **🛡️ 100% Local:** All your data (fic list, notes, ratings, credentials, and history) is stored **ONLY** on your computer. Nothing is ever sent to a third-party server. The code is open-source for you to verify.
-*   **🔒 Secure Credentials:** Your AO3 password is never stored in a plain text file. It is handled by the `keyring` library, which saves it securely in the Windows Credential Manager, your operating system's native keychain.
+*   **🔒 Secure Credentials:** Your AO3 password is never stored in a plain text file. It is handled by the `keyring` library, which saves it securely in the Windows Credential Manager or your operating system's native keychain.
 *   **🤝 Direct Communication:** The app communicates only and directly with Archive of Our Own's servers, exactly as your web browser does.
 
-## Features Overview
+## Features Overview (v1.9.0)
 
-*   **📚 Smart Importer:** Paste any AO3 URL (work, author, series, or collection) to import fics into your local library.
-*   **🕓 Full Reading History Integration:**
-    *   Import your **entire** AO3 reading history to create a complete, private archive of everything you've ever read.
-    *   Enjoy **intelligent incremental syncs** that quickly fetch only your newest reads without re-importing everything.
-    *   Use the **"Inbox" view** to see fics from your history that you haven't formally added to your library yet.
-*   **🔍 Advanced Library Management:**
-    *   Instantly sort, search, and filter your archive by dozens of fields.
-    *   View all fic metadata, notes, and tags in a detailed side panel.
+*   **📚 Smart Importer & Library Management:**
+    *   Paste any AO3 URL (work, author, series, or collection) to import fics into your local library.
+    *   Instantly sort, search, and filter your archive by dozens of fields, including a personalized **'Match Score'** to see how well any fic aligns with your tastes.
     *   Add personal notes, 5-star ratings, and custom organizational tags to any fic.
+
+*   **🧠 Intelligent Recommendation & Discovery Engine:**
+    *   **For You Suggestions:** Get personalized recommendations from your "To Read" list, powered by a deep analysis of your reading habits.
+    *   **Discover from AO3:** Find new fics you'll love without leaving the app. The Discovery Engine builds smart queries based on your profile using unique strategies:
+        *   **The Safe Bet:** Finds fics that perfectly match your top fandoms, relationships, and tags.
+        *   **The Hidden Gem:** Unearths high-quality stories with low popularity.
+        *   **Author-Curated:** A one-of-a-kind feature that suggests works from your favorite authors' public bookmarks.
+    *   **Detailed Previews:** View a fic's complete summary, tags, and stats *before* importing it.
+
 *   **⚡ Power User Tools:**
-    *   **Automated Status Sync:** Connect your AO3 account to automatically verify your Kudos & Comment status across your entire library.
+    *   **Reading Queue:** Organize your next reads with a dedicated, drag-and-drop reorderable queue.
+    *   **Advanced Filter Builder:** Construct complex queries with `AND`, `OR`, and `NOT` logic for tags and other fields.
+    *   **Saved Filters:** Save your complex searches and recall them with a single click.
     *   **Bulk Editing:** Select multiple fics at once to efficiently change their status or manage tags.
-*   **📊 Reading Statistics:**
-    *   Analyze your reading habits with interactive charts and word clouds.
-    *   Track your top fandoms, categories, ratings, and see your reading history by publication year.
+    *   **Automated Status Sync:** Connect your AO3 account to automatically verify your Kudos & Comment status across your library.
+
+*   **🕓 Full Reading History Integration:**
+    *   Import your **entire** AO3 reading history to create a complete, private archive.
+    *   Enjoy **intelligent incremental syncs** that quickly fetch only your newest reads.
+    *   Use the **"Inbox" view** to manage fics from your history that you haven't formally added to your library.
+
+*   **🚀 Reader Dashboard & True Favorites Analysis:**
+    *   Go beyond simple counts with a multi-tab dashboard that analyzes your reading habits.
+    *   The **Analysis Engine** calculates your *true* favorite authors, tags, and relationships based on a sophisticated weighting model that considers re-reads, ratings, and engagement.
+    *   Create **Pro Word Clouds** based on your unique taste profile and export them as high-quality PNG or vector SVG files.
+
 *   **🏆 Gamification & Achievements:** Unlock achievements and level up based on the words and fics you've read.
 *   **🎨 Customization:** Switch between Light and Dark themes to suit your preference.
 
-## 🚀 What's Next? The Road to v1.7.0
+## 🚀 What's Next? The Road to v2.0 and Beyond
 
-The new Reading History data is the foundation for our next major feature: the **Advanced Reader Insights Dashboard**. Soon, you'll be able to answer questions like:
-*   "Which stories have I re-read the most?"
-*   "What were my most active reading months or years?"
-*   "Based on my actual reading habits, who are my *true* favorite authors and what are my comfort tags?"
+With the "Power Reader" phase now complete, our strategic vision is focused on expanding the ecosystem.
+
+*   **Phase 10: The Creator Ecosystem (v2.0):**
+    *   **Writer's Dashboard:** Tools for managing Works in Progress (WIPs), chapter outlines, notes, and writing goals.
+    *   **Community & Event Tools:** Features for moderators of fandom events (like exchanges or bingos) to manage participants, assignments, and deadlines.
+
+*   **Phase 11: UX & Visual Revamp (Post-v2.0):**
+    *   A full frontend refactoring to modernize the user interface based on the now-mature feature set.
+    *   Advanced theming and further usability improvements based on community feedback.
 
 ## Installation & Usage
 
@@ -94,5 +114,3 @@ If you prefer to run the application directly from the source code, you can do s
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-

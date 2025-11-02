@@ -1,9 +1,6 @@
 from database import get_activity_by_month, get_reread_statistics
 from models import Fic, db as peewee_db
 
-# Useremo la fixture db_connection che abbiamo appena corretto!
-# pytest la inietterà automaticamente.
-
 
 def populate_test_data():
     """
@@ -36,7 +33,6 @@ def populate_test_data():
         },
     ]
 
-    # Usa direttamente peewee_db importato
     with peewee_db.atomic():
         for data in test_fics:
             full_data = {"author": "Test Author", "status": "Read", "is_complete": True, **data}
@@ -84,16 +80,15 @@ def test_get_reread_statistics_respects_limit(db_connection):
     assert top_2_rereads[1]["title"] == "Silver Medal"
 
 
-def test_get_activity_by_month_default(db_connection):  # <-- RENAMED
+def test_get_activity_by_month_default(db_connection):
     """
     Verifica che get_activity_by_month, con i parametri di default,
     raggruppi correttamente le opere per mese di aggiunta.
     """
     populate_test_data()
-    # Call the new function, explicitly testing its default behavior
-    activity_rate = get_activity_by_month(view_filter="all", date_field="date_added")  # <-- NEW FUNCTION CALL
 
-    # Le asserzioni rimangono valide per questo scenario di default
+    activity_rate = get_activity_by_month(view_filter="all", date_field="date_added")
+
     assert len(activity_rate) == 3
     assert activity_rate[0] == ("2023-10", 2)
     assert activity_rate[1] == ("2023-11", 2)

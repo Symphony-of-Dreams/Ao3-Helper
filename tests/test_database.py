@@ -61,7 +61,7 @@ def test_add_fic_prevents_duplicates(db_connection):
     Verifica che add_fic ritorni False se si tenta di inserire una fic con la stessa URL.
     """
     assert add_fic(BASE_FIC_DATA) is True
-    assert add_fic(BASE_FIC_DATA) is False  # Tentativo duplicato
+    assert add_fic(BASE_FIC_DATA) is False
     assert len(get_filtered_fics()) == 1
 
 
@@ -131,9 +131,8 @@ def test_get_activity_by_month(db_connection):
     """
     Tests the activity aggregation logic with various filters and date fields.
     """
-    # 1. Setup a controlled dataset
+
     fics_data = [
-        # Fic 1: In Library & History, added Jan, updated Feb, visited Mar
         {
             **BASE_FIC_DATA,
             "url": "fic1",
@@ -143,7 +142,6 @@ def test_get_activity_by_month(db_connection):
             "date_updated": "2025-02-05",
             "last_visit_date": "2025-03-15",
         },
-        # Fic 2: In Library only, added Jan, updated Mar
         {
             **BASE_FIC_DATA,
             "url": "fic2",
@@ -153,7 +151,6 @@ def test_get_activity_by_month(db_connection):
             "date_updated": "2025-03-10",
             "last_visit_date": None,
         },
-        # Fic 3: In History only, added Feb, updated Feb, visited Apr
         {
             **BASE_FIC_DATA,
             "url": "fic3",
@@ -163,7 +160,6 @@ def test_get_activity_by_month(db_connection):
             "date_updated": "2025-02-20",
             "last_visit_date": "2025-04-01",
         },
-        # Fic 4: Not in library or history, added Feb
         {
             **BASE_FIC_DATA,
             "url": "fic4",
@@ -177,33 +173,24 @@ def test_get_activity_by_month(db_connection):
     for fic in fics_data:
         Fic.create(**fic)
 
-    # 2. Run tests with assertions
-
-    # Test case: All entries, grouped by date_added
     result = get_activity_by_month(view_filter="all", date_field="date_added")
     assert result == [("2025-01", 2), ("2025-02", 2)]
 
-    # Test case: Library entries, grouped by date_added
     result = get_activity_by_month(view_filter="library", date_field="date_added")
     assert result == [("2025-01", 2)]
 
-    # Test case: History entries, grouped by date_added
     result = get_activity_by_month(view_filter="history", date_field="date_added")
     assert result == [("2025-01", 1), ("2025-02", 1)]
 
-    # Test case: All entries, grouped by date_updated
     result = get_activity_by_month(view_filter="all", date_field="date_updated")
     assert result == [("2025-02", 3), ("2025-03", 1)]
 
-    # Test case: History entries, grouped by last_visit_date
     result = get_activity_by_month(view_filter="history", date_field="last_visit_date")
     assert result == [("2025-03", 1), ("2025-04", 1)]
 
-    # Test case: Library entries, grouped by last_visit_date (should have only one result)
     result = get_activity_by_month(view_filter="library", date_field="last_visit_date")
     assert result == [("2025-03", 1)]
 
-    # Test case: No results expected (no visit dates for fics only in library)
     result = get_activity_by_month(view_filter="library", date_field="last_visit_date")
-    # Fic2 is in library but has no visit date, so the result for library fics by visit date should only be fic1
+
     assert ("2025-01", 1) not in result

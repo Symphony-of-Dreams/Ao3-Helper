@@ -379,7 +379,6 @@ def get_filtered_fics(
     try:
         query = Fic.select()
 
-        # 1. Applica il filtro di vista principale (Library, History, etc.)
         if view_filter == "library":
             query = query.where(Fic.is_in_library)
         elif view_filter == "history":
@@ -390,7 +389,6 @@ def get_filtered_fics(
         if not filters:
             filters = {}
 
-        # 2. Applica le condizioni semplici (AND)
         conditions = filters.get("conditions", {})
         search_all_term = conditions.pop("all", None)
         for field, value in conditions.items():
@@ -409,32 +407,26 @@ def get_filtered_fics(
                 (Fic.url.in_(fics_with_user_tag)),
             ]
             query = query.where(peewee.reduce(operator.or_, or_clauses))
-        # 3. Applica i filtri sui tag
+
         tags_filter = filters.get("tags", {})
 
-        # Tag che devono esserci tutti (AND)
         for tag in tags_filter.get("and", []):
             query = query.where(Fic.tags.contains(tag))
 
-        # Tag che non devono esserci (NOT)
         for tag in tags_filter.get("not", []):
             query = query.where(~Fic.tags.contains(tag))
 
-        # Tag di cui ne basta uno (OR)
         or_tags = tags_filter.get("or", [])
         if or_tags:
             or_clauses = [(Fic.tags.contains(tag)) for tag in or_tags]
             query = query.where(peewee.reduce(operator.or_, or_clauses))
 
-        # 4. Applica i filtri sui "user tags" (richiede una subquery)
         user_tags_filter = filters.get("user_tags", {})
 
-        # User tags che devono esserci tutti (AND)
         for tag_name in user_tags_filter.get("and", []):
             fics_with_tag = Fic.select(Fic.url).join(FicTag).join(UserTag).where(UserTag.name == tag_name)
             query = query.where(Fic.url.in_(fics_with_tag))
 
-        # 5. Esegui la query finale e recupera i risultati
         final_query = (
             query.select(Fic, fn.GROUP_CONCAT(UserTag.name, ", ").alias("user_tags"))
             .join(FicTag, JOIN.LEFT_OUTER, on=(Fic.url == FicTag.fic))
@@ -729,7 +721,6 @@ def calculate_base_stats() -> Dict[str, int]:
         stats["fics_to_read"] = Fic.select().where(Fic.status == const.STATUS_TO_READ).count()
         stats["fics_dropped"] = Fic.select().where(Fic.status == const.STATUS_DROPPED).count()
 
-        # Calcolo parole lette
         words_query = Fic.select(fn.SUM(Fic.word_count)).where(Fic.status.in_(const.COMPLETED_STATUSES)).scalar()
         stats["total_words_read"] = words_query or 0
 
@@ -990,33 +981,25 @@ def get_activity_by_month(view_filter: str = "all", date_field: str = "date_adde
         A list of tuples (year-month, fic_count), sorted by month.
     """
     try:
-        # Map the public-facing field name to the actual DB column model
+
         date_column_map = {
             "date_added": Fic.date_added,
             "date_updated": Fic.date_updated,
             "last_visit_date": Fic.last_visit_date,
         }
 
-        # Select the correct date column, defaulting to date_added
         selected_date_column = date_column_map.get(date_field, Fic.date_added)
 
-        # Start with the base query
-        base_query = (
-            Fic.select(
-                fn.strftime("%Y-%m", selected_date_column).alias("month_year"),
-                fn.COUNT(Fic.url).alias("fic_count"),
-            )
-            # IMPORTANT: Exclude entries where the selected date is NULL or empty
-            .where(selected_date_column.is_null(False) & (selected_date_column != ""))
-        )
+        base_query = Fic.select(
+            fn.strftime("%Y-%m", selected_date_column).alias("month_year"),
+            fn.COUNT(Fic.url).alias("fic_count"),
+        ).where(selected_date_column.is_null(False) & (selected_date_column != ""))
 
-        # Apply the data filter
         if view_filter == "library":
             base_query = base_query.where(Fic.is_in_library)
         elif view_filter == "history":
             base_query = base_query.where(Fic.is_in_history)
 
-        # Add grouping and ordering
         final_query = (
             base_query.group_by(fn.strftime("%Y-%m", selected_date_column))
             .order_by(fn.strftime("%Y-%m", selected_date_column).asc())
@@ -1035,18 +1018,16 @@ def add_fics_to_queue(urls: List[str]) -> None:
     if not urls:
         return
     try:
-        # Trova l'ordine massimo attuale nella coda
+
         max_order_query = Fic.select(fn.MAX(Fic.queue_order)).where(Fic.is_in_reading_queue)
         max_order = max_order_query.scalar() or 0
 
-        # --- INIZIA BLOCCO CORRETTO ---
         with db.atomic():
-            # Itera sugli URL e aggiorna ogni fic singolarmente all'interno della transazione
+
             for i, url in enumerate(urls):
                 new_order = max_order + i + 1
                 query = Fic.update(is_in_reading_queue=True, queue_order=new_order).where(Fic.url == url)
                 query.execute()
-        # --- FINE BLOCCO CORRETTO ---
 
         logger.info(f"Added {len(urls)} fics to the reading queue.")
 
@@ -1101,7 +1082,7 @@ def save_filter(name: str, filter_data: str) -> None:
         logger.info(f"Saved new filter '{name}'.")
     except peewee.IntegrityError:
         logger.warning(f"A filter with the name '{name}' already exists.")
-        raise  # Rilancia l'eccezione per gestirla nella UI
+        raise
     except Exception:
         logger.exception(f"Failed to save filter '{name}'.")
         raise

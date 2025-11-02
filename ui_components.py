@@ -1,6 +1,39 @@
 # ui_components.py
 
-from PyQt6.QtWidgets import QTableWidgetItem
+from PyQt6.QtWidgets import QCompleter, QTableWidgetItem
+
+
+class TagCompleter(QCompleter):
+    """
+    A custom QCompleter that handles comma-separated tags.
+    It provides suggestions for the term currently being typed after the last comma.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+
+    def pathFromIndex(self, index):
+        """Returns the full text to be inserted from a selected suggestion."""
+        path = super().pathFromIndex(index)
+
+        text = self.widget().text()
+
+        last_comma = text.rfind(",")
+
+        if last_comma == -1:
+
+            return path
+        else:
+
+            prefix = text[:last_comma].strip()
+            return f"{prefix}, {path}"
+
+    def splitPath(self, path):
+        """Splits the input text to find the part to be completed."""
+
+        last_comma = path.rfind(",")
+
+        return [path[last_comma + 1 :].lstrip()]
 
 
 class NumericTableWidgetItem(QTableWidgetItem):
@@ -10,13 +43,12 @@ class NumericTableWidgetItem(QTableWidgetItem):
     """
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
-        # Try to convert item data to float for comparison.
-        # This handles both integers and floats correctly.
+
         try:
-            # We use the item's text for display, which is what we need to compare.
+
             self_data = float(self.text())
             other_data = float(other.text())
             return self_data < other_data
         except (ValueError, TypeError):
-            # If conversion fails for any reason, fall back to standard string comparison.
+
             return super().__lt__(other)

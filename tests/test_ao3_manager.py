@@ -67,15 +67,13 @@ def test_fetch_fic_data_processes_work_correctly():
     mock_work.bookmarks = 10
     mock_work.comments = 5
 
-    # Patchiamo la creazione dell'oggetto AO3.Work per ritornare il nostro mock già pronto
     with patch("ao3_manager.AO3.Work", return_value=mock_work) as mock_work_class:
 
         client = AO3Client()
-        client.session = None  # Forza la modalità guest
+        client.session = None
 
         result = client.fetch_fic_data("https://archiveofourown.org/works/123")
 
-        # Ora verifichiamo che la nostra funzione abbia processato il mock correttamente
         assert result is not None
         assert result["title"] == "Mock Fic Title"
         assert result["author"] == "MockAuthor"
@@ -83,7 +81,5 @@ def test_fetch_fic_data_processes_work_correctly():
         assert result["is_complete"] is True
         assert result["hits"] == 100
 
-        # Verifichiamo che il nostro codice abbia chiamato AO3.Work per creare l'oggetto
-        # e che poi abbia chiamato .reload() su quell'oggetto per caricarlo.
         mock_work_class.assert_called_with(123, load=False)
         mock_work.reload.assert_called_once()

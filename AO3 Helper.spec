@@ -4,7 +4,7 @@
 from PyInstaller.utils.hooks import get_module_file_attribute
 import os
 
-# Trova la directory base di NumPy in modo affidabile
+
 numpy_basedir = os.path.dirname(get_module_file_attribute('numpy'))
 
 block_cipher = None

@@ -1,3 +1,4 @@
+import random
 import re
 import time
 from datetime import datetime  # noqa: F401
@@ -310,6 +311,54 @@ class AO3Client:
         except Exception:
             logger.exception(f"An unexpected error occurred while fetching bookmarks for {username}")
             return {"error": "An unexpected error occurred while fetching bookmarks."}
+
+    def get_random_bookmarks_from_author(self, username: str, num_to_sample: int = 5) -> List[int]:
+        """
+        Recupera un campione casuale di work ID dai bookmark pubblici di un utente,
+        scegliendo una pagina a caso per essere più efficiente.
+        """
+        logger.info(f"Fetching random bookmarks sample for user: {username}")
+        try:
+
+            base_url = f"https://archiveofourown.org/users/{username}/bookmarks"
+
+            response = self.guest_requester.request("GET", base_url)
+
+            page_soup = AO3.utils.BeautifulSoup(response.text, "html.parser")
+
+            max_pages = 1
+            pagination = page_soup.find("ol", {"class": "pagination actions"})
+            if pagination:
+                page_links = pagination.find_all("a")
+                if len(page_links) > 1:
+                    try:
+                        max_pages = int(page_links[-2].text)
+                    except (ValueError, IndexError):
+                        max_pages = 1
+
+            random_page = random.randint(1, max_pages)
+            logger.debug(f"Randomly selected page {random_page}/{max_pages} for {username}")
+
+            page_url = f"{base_url}?page={random_page}"
+
+            response = self.guest_requester.request("GET", page_url)
+
+            page_soup = AO3.utils.BeautifulSoup(response.text, "html.parser")
+
+            page_work_ids = []
+            bookmarks_list = page_soup.find("ol", {"class": "bookmark index group"})
+            if bookmarks_list:
+                for header in bookmarks_list.find_all("h4", {"class": "heading"}):
+                    link = header.find("a")
+                    if link and "href" in link.attrs and "/works/" in link["href"]:
+                        page_work_ids.append(workid_from_url(link["href"]))
+
+            final_sample_size = min(num_to_sample, len(page_work_ids))
+            return random.sample(page_work_ids, final_sample_size)
+
+        except Exception:
+            logger.exception(f"An unexpected error occurred while fetching random bookmarks for {username}")
+            return []
 
     def get_work_ids_from_collection(self, collection_name: str) -> List[int] | Dict[str, str]:
         logger.info(f"Fetching all work IDs for collection: {collection_name}")

@@ -71,7 +71,7 @@ class WelcomeDialog(QDialog):
         main_layout.addLayout(btn_layout)
 
         self.save_button.clicked.connect(self._save_and_connect)
-        self.guest_button.clicked.connect(self._proceed_as_guest)
+        self.guest_button.clicked.connect(self.reject)
 
     def _show_privacy_info(self) -> None:
         QMessageBox.information(
@@ -87,31 +87,40 @@ class WelcomeDialog(QDialog):
         )
 
     def _save_and_connect(self) -> None:
-        """Saves credentials and attempts to connect in a background thread."""
-        username = self.user_input.text().strip()
-        password = self.pass_input.text()
+        """Salva le credenziali, tenta il login e fornisce un feedback chiaro all'utente."""
+        new_username = self.user_input.text().strip()
+        new_password = self.pass_input.text()
 
-        final_username = username or const.ConfigCreds.DEFAULT_USER
-        config_manager.set(const.ConfigSections.CREDS, const.ConfigCreds.USERNAME, final_username)
+        config_manager.set(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME, new_username)
         config_manager.save_config()
 
-        if password:
-            security_manager.set_password(final_username, password)
+        if new_password:
+            security_manager.set_password(new_username, new_password)
         else:
-            security_manager.delete_password(final_username)
 
-        self.save_button.setEnabled(False)
-        self.save_button.setText("Connecting...")
-        self.guest_button.setEnabled(False)
+            security_manager.delete_password(new_username)
 
-        self.login_thread = QThread()
-        worker = LoginWorker()
-        worker.moveToThread(self.login_thread)
-        worker.finished.connect(self.accept)
-        self.login_thread.started.connect(worker.run)
-        self.login_thread.finished.connect(self.login_thread.deleteLater)
-        self.login_thread.start()
+        login_successful = ao3_client.reload_session()
 
-    def _proceed_as_guest(self) -> None:
-        """Proceeds without saving credentials."""
+        if login_successful and ao3_client.session:
+            QMessageBox.information(
+                self,
+                "Success!",
+                f"You have successfully logged in as '{ao3_client.session.username}'. Welcome to AO3 Helper!",
+            )
+        elif not new_username or new_username == const.CONFIG_DEFAULT_USER:
+
+            QMessageBox.information(
+                self,
+                "Proceeding as Guest",
+                "No username was entered. You will proceed as a guest.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Login Failed",
+                "Your settings have been saved, but the AO3 login failed. Please check your credentials.\n"
+                "You will proceed as a guest for now. You can try logging in again via the File > Settings menu.",
+            )
+
         self.accept()

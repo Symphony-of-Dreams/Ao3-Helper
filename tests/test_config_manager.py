@@ -1,4 +1,3 @@
-
 import os
 from configparser import ConfigParser
 
@@ -7,7 +6,6 @@ import pytest
 import config_manager
 import constants as const
 from config_manager import ConfigManager
-
 
 
 @pytest.fixture
@@ -23,8 +21,6 @@ def temp_config_file(tmp_path):
     import importlib
 
     importlib.reload(config_manager)
-
-
 
 
 def test_config_manager_creates_file_with_defaults(temp_config_file):
@@ -83,7 +79,6 @@ def test_config_manager_fills_missing_keys(temp_config_file):
     cm = ConfigManager(filename=str(temp_config_file))
 
     assert cm.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME) == "my_real_user"
-
 
     assert cm.get(const.CONFIG_SECTION_SETTINGS, const.CONFIG_KEY_THEME) == const.THEME_DEFAULT
 

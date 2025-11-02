@@ -1,7 +1,8 @@
 import logging  # noqa: F401
+import operator
 import sqlite3
 from datetime import datetime
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import peewee
 from peewee import JOIN, fn
@@ -9,7 +10,7 @@ from playhouse.shortcuts import model_to_dict
 
 import constants as const
 from logger_setup import logger
-from models import Achievement, Fic, FicTag, Notification, UserTag
+from models import Achievement, Fic, FicTag, Notification, SavedFilter, UserTag, db
 
 
 def initialize_database() -> None:
@@ -125,6 +126,33 @@ def run_database_migrations() -> None:
                     except sqlite3.OperationalError as e:
                         logger.warning(
                             f"Could not add all columns for v4, some might exist already. This is usually safe. Error: {e}"  # noqa: E501
+                        )
+                if current_version < 5:
+                    logger.info("Applying migration to v5: Adding Reading Queue columns...")
+                    try:
+                        c.execute("ALTER TABLE fics ADD COLUMN is_in_reading_queue INTEGER DEFAULT 0")
+                        c.execute("ALTER TABLE fics ADD COLUMN queue_order INTEGER")
+                        logger.info("Successfully added columns for v5.")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(
+                            f"Could not add columns for v5, they might exist already. This is usually safe. Error: {e}"
+                        )
+                if current_version < 6:
+                    logger.info("Applying migration to v6: Creating saved_filters table...")
+                    try:
+                        c.execute(
+                            """
+                            CREATE TABLE saved_filters (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                name TEXT NOT NULL UNIQUE,
+                                filter_data TEXT NOT NULL
+                            )
+                        """
+                        )
+                        logger.info("Successfully created table for v6.")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(
+                            f"Could not create table for v6, it might exist already. This is usually safe. Error: {e}"
                         )
 
                 logger.info(f"Setting database version to {const.LATEST_DB_VERSION}.")
@@ -338,45 +366,75 @@ def count_verified_statuses() -> Dict[str, int]:
 
 
 def get_filtered_fics(
-    search_text: str | None = None, search_field: str = "tutti", view_filter: str = "library"
+    view_filter: str = "library",
+    filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
+    """
+    Retrieves fics based on a structured filter object.
 
+    Args:
+        view_filter: "library", "history", "inbox", or "all".
+        filters: A dictionary representing the complex search query.
+    """
     try:
-
         query = Fic.select()
 
+        # 1. Applica il filtro di vista principale (Library, History, etc.)
         if view_filter == "library":
             query = query.where(Fic.is_in_library)
         elif view_filter == "history":
             query = query.where(Fic.is_in_history)
         elif view_filter == "inbox":
-            query = query.where(Fic.is_in_history & ~Fic.is_in_library)
+            query = query.where((Fic.is_in_history) & (not Fic.is_in_library))
 
-        if search_text and search_text.strip():
-            term = search_text.strip()
+        if not filters:
+            filters = {}
 
-            if search_field not in [const.SEARCH_ALL, const.SEARCH_USER_TAGS]:
-                if hasattr(Fic, search_field):
-                    query = query.where(getattr(Fic, search_field).contains(term))
+        # 2. Applica le condizioni semplici (AND)
+        conditions = filters.get("conditions", {})
+        search_all_term = conditions.pop("all", None)
+        for field, value in conditions.items():
+            if hasattr(Fic, field) and value:
+                query = query.where(getattr(Fic, field).contains(value))
+        if search_all_term:
+            term = search_all_term
+            fics_with_user_tag = Fic.select(Fic.url).join(FicTag).join(UserTag).where(UserTag.name.contains(term))
 
-            elif search_field == const.SEARCH_USER_TAGS:
+            or_clauses = [
+                (Fic.title.contains(term)),
+                (Fic.author.contains(term)),
+                (Fic.fandoms.contains(term)),
+                (Fic.tags.contains(term)),
+                (Fic.series_name.contains(term)),
+                (Fic.url.in_(fics_with_user_tag)),
+            ]
+            query = query.where(peewee.reduce(operator.or_, or_clauses))
+        # 3. Applica i filtri sui tag
+        tags_filter = filters.get("tags", {})
 
-                fics_with_tag = Fic.select(Fic.url).join(FicTag).join(UserTag).where(UserTag.name.contains(term))
-                query = query.where(Fic.url.in_(fics_with_tag))
+        # Tag che devono esserci tutti (AND)
+        for tag in tags_filter.get("and", []):
+            query = query.where(Fic.tags.contains(tag))
 
-            elif search_field == const.SEARCH_ALL:
+        # Tag che non devono esserci (NOT)
+        for tag in tags_filter.get("not", []):
+            query = query.where(~Fic.tags.contains(tag))
 
-                fics_with_tag = Fic.select(Fic.url).join(FicTag).join(UserTag).where(UserTag.name.contains(term))
+        # Tag di cui ne basta uno (OR)
+        or_tags = tags_filter.get("or", [])
+        if or_tags:
+            or_clauses = [(Fic.tags.contains(tag)) for tag in or_tags]
+            query = query.where(peewee.reduce(operator.or_, or_clauses))
 
-                query = query.where(
-                    (Fic.title.contains(term))
-                    | (Fic.author.contains(term))
-                    | (Fic.fandoms.contains(term))
-                    | (Fic.tags.contains(term))
-                    | (Fic.series_name.contains(term))
-                    | (Fic.url.in_(fics_with_tag))
-                )
+        # 4. Applica i filtri sui "user tags" (richiede una subquery)
+        user_tags_filter = filters.get("user_tags", {})
 
+        # User tags che devono esserci tutti (AND)
+        for tag_name in user_tags_filter.get("and", []):
+            fics_with_tag = Fic.select(Fic.url).join(FicTag).join(UserTag).where(UserTag.name == tag_name)
+            query = query.where(Fic.url.in_(fics_with_tag))
+
+        # 5. Esegui la query finale e recupera i risultati
         final_query = (
             query.select(Fic, fn.GROUP_CONCAT(UserTag.name, ", ").alias("user_tags"))
             .join(FicTag, JOIN.LEFT_OUTER, on=(Fic.url == FicTag.fic))
@@ -387,11 +445,10 @@ def get_filtered_fics(
 
         results = []
         for fic_model in final_query.iterator():
-
             fic_dict = model_to_dict(fic_model)
-
             fic_dict["user_tags"] = fic_model.user_tags
             results.append(fic_dict)
+
         return results
 
     except Exception as e:
@@ -921,20 +978,150 @@ def get_reread_statistics(limit: int = 10) -> List[Dict[str, Any]]:
         return []
 
 
-def get_discovery_rate_by_month() -> List[Tuple[str, int]]:
+def get_activity_by_month(view_filter: str = "all", date_field: str = "date_added") -> List[Tuple[str, int]]:
+    """
+    Aggregates fic count per month based on a selectable date field and data filter.
 
+    Args:
+        view_filter: "all", "library", or "history". Defines which fics to include.
+        date_field: "date_added", "date_updated", or "last_visit_date". Defines the date for grouping.
+
+    Returns:
+        A list of tuples (year-month, fic_count), sorted by month.
+    """
     try:
+        # Map the public-facing field name to the actual DB column model
+        date_column_map = {
+            "date_added": Fic.date_added,
+            "date_updated": Fic.date_updated,
+            "last_visit_date": Fic.last_visit_date,
+        }
 
-        query = (
+        # Select the correct date column, defaulting to date_added
+        selected_date_column = date_column_map.get(date_field, Fic.date_added)
+
+        # Start with the base query
+        base_query = (
             Fic.select(
-                fn.strftime("%Y-%m", Fic.date_added).alias("month_year"),
+                fn.strftime("%Y-%m", selected_date_column).alias("month_year"),
                 fn.COUNT(Fic.url).alias("fic_count"),
             )
-            .group_by(fn.strftime("%Y-%m", Fic.date_added))
-            .order_by(fn.strftime("%Y-%m", Fic.date_added).asc())
+            # IMPORTANT: Exclude entries where the selected date is NULL or empty
+            .where(selected_date_column.is_null(False) & (selected_date_column != ""))
+        )
+
+        # Apply the data filter
+        if view_filter == "library":
+            base_query = base_query.where(Fic.is_in_library)
+        elif view_filter == "history":
+            base_query = base_query.where(Fic.is_in_history)
+
+        # Add grouping and ordering
+        final_query = (
+            base_query.group_by(fn.strftime("%Y-%m", selected_date_column))
+            .order_by(fn.strftime("%Y-%m", selected_date_column).asc())
             .tuples()
         )
+
+        return list(final_query)
+
+    except Exception as e:
+        logger.exception(f"Failed to get activity data for filter '{view_filter}' and date_field '{date_field}': {e}")
+        return []
+
+
+def add_fics_to_queue(urls: List[str]) -> None:
+    """Adds a list of fics to the reading queue, placing them at the end."""
+    if not urls:
+        return
+    try:
+        # Trova l'ordine massimo attuale nella coda
+        max_order_query = Fic.select(fn.MAX(Fic.queue_order)).where(Fic.is_in_reading_queue)
+        max_order = max_order_query.scalar() or 0
+
+        # --- INIZIA BLOCCO CORRETTO ---
+        with db.atomic():
+            # Itera sugli URL e aggiorna ogni fic singolarmente all'interno della transazione
+            for i, url in enumerate(urls):
+                new_order = max_order + i + 1
+                query = Fic.update(is_in_reading_queue=True, queue_order=new_order).where(Fic.url == url)
+                query.execute()
+        # --- FINE BLOCCO CORRETTO ---
+
+        logger.info(f"Added {len(urls)} fics to the reading queue.")
+
+    except Exception as e:
+        logger.exception(f"Failed to add fics to queue: {e}")
+
+
+def remove_fics_from_queue(urls: List[str]) -> None:
+    """Removes a list of fics from the reading queue."""
+    if not urls:
+        return
+    try:
+        query = Fic.update(is_in_reading_queue=False, queue_order=None).where(Fic.url.in_(urls))
+        query.execute()
+        logger.info(f"Removed {len(urls)} fics from the reading queue.")
+    except Exception as e:
+        logger.exception(f"Failed to remove fics from queue: {e}")
+
+
+def get_reading_queue() -> List[Dict[str, Any]]:
+    """Retrieves all fics in the reading queue, sorted by their order."""
+    try:
+        query = Fic.select().where(Fic.is_in_reading_queue).order_by(Fic.queue_order.asc()).dicts()
         return list(query)
     except Exception as e:
-        logger.exception(f"Failed to get discovery rate using ORM: {e}")
+        logger.exception(f"Failed to retrieve reading queue: {e}")
         return []
+
+
+def update_queue_order(updates: List[Tuple[str, int]]) -> None:
+    """
+    Updates the queue_order for a list of fics in a single transaction.
+    Args:
+        updates: A list of tuples, where each tuple is (fic_url, new_order_index).
+    """
+    if not updates:
+        return
+    try:
+        with db.atomic():
+            for url, order in updates:
+                query = Fic.update(queue_order=order).where(Fic.url == url)
+                query.execute()
+        logger.info(f"Successfully updated queue order for {len(updates)} fics.")
+    except Exception:
+        logger.exception("Failed to update queue order.")
+
+
+def save_filter(name: str, filter_data: str) -> None:
+    """Saves a new filter to the database."""
+    try:
+        SavedFilter.create(name=name, filter_data=filter_data)
+        logger.info(f"Saved new filter '{name}'.")
+    except peewee.IntegrityError:
+        logger.warning(f"A filter with the name '{name}' already exists.")
+        raise  # Rilancia l'eccezione per gestirla nella UI
+    except Exception:
+        logger.exception(f"Failed to save filter '{name}'.")
+        raise
+
+
+def get_all_filters() -> List[Dict[str, Any]]:
+    """Retrieves all saved filters from the database."""
+    try:
+        query = SavedFilter.select().order_by(SavedFilter.name.asc()).dicts()
+        return list(query)
+    except Exception:
+        logger.exception("Failed to get all saved filters.")
+        return []
+
+
+def delete_filter(filter_id: int) -> None:
+    """Deletes a saved filter by its ID."""
+    try:
+        query = SavedFilter.delete().where(SavedFilter.id == filter_id)
+        query.execute()
+        logger.info(f"Deleted filter with id {filter_id}.")
+    except Exception:
+        logger.exception(f"Failed to delete filter with id {filter_id}.")

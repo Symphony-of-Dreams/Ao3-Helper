@@ -1,4 +1,4 @@
-from database import get_discovery_rate_by_month, get_reread_statistics
+from database import get_activity_by_month, get_reread_statistics
 from models import Fic, db as peewee_db
 
 # Useremo la fixture db_connection che abbiamo appena corretto!
@@ -84,33 +84,17 @@ def test_get_reread_statistics_respects_limit(db_connection):
     assert top_2_rereads[1]["title"] == "Silver Medal"
 
 
-def test_get_discovery_rate_by_month(db_connection):
+def test_get_activity_by_month_default(db_connection):  # <-- RENAMED
     """
-    Verifica che get_discovery_rate_by_month raggruppi correttamente
-    le opere per mese e anno e le restituisca in ordine cronologico.
+    Verifica che get_activity_by_month, con i parametri di default,
+    raggruppi correttamente le opere per mese di aggiunta.
     """
-    # 1. Setup: Usa la stessa funzione helper per popolare il DB.
-    # I dati sono già adatti a questo test.
     populate_test_data()
+    # Call the new function, explicitly testing its default behavior
+    activity_rate = get_activity_by_month(view_filter="all", date_field="date_added")  # <-- NEW FUNCTION CALL
 
-    # 2. Azione: Chiama la funzione da testare.
-    discovery_rate = get_discovery_rate_by_month()
-
-    # 3. Asserzioni: Verifica il risultato.
-
-    # Ci aspettiamo 3 gruppi: 2023-10, 2023-11, 2024-01
-    assert len(discovery_rate) == 3
-
-    # Controlliamo che ogni gruppo sia corretto e in ordine
-
-    # Primo gruppo: Ottobre 2023
-    assert discovery_rate[0][0] == "2023-10"
-    assert discovery_rate[0][1] == 2  # fic1 e fic2
-
-    # Secondo gruppo: Novembre 2023
-    assert discovery_rate[1][0] == "2023-11"
-    assert discovery_rate[1][1] == 2  # fic3 e fic4
-
-    # Terzo gruppo: Gennaio 2024
-    assert discovery_rate[2][0] == "2024-01"
-    assert discovery_rate[2][1] == 2  # fic5 e fic6
+    # Le asserzioni rimangono valide per questo scenario di default
+    assert len(activity_rate) == 3
+    assert activity_rate[0] == ("2023-10", 2)
+    assert activity_rate[1] == ("2023-11", 2)
+    assert activity_rate[2] == ("2024-01", 2)

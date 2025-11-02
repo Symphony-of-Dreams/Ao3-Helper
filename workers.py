@@ -1,14 +1,18 @@
 import time
-from typing import Any, Dict, List, cast
+from typing import TYPE_CHECKING, Any, Dict, List, cast
 
 import AO3
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from wordcloud import WordCloud
 
 import constants as const
 from ao3_manager import ao3_client
 from config_manager import config_manager
 from database import Fic, add_fic, add_or_update_fic_from_history, get_existing_urls, update_fic_status
 from logger_setup import logger
+
+if TYPE_CHECKING:
+    from analysis_engine import AnalysisEngine
 
 
 class BaseImportWorker(QObject):
@@ -407,3 +411,86 @@ class TotalSyncWorker(QObject):
     def cancel(self) -> None:
         self.status_update.emit("Cancellation requested...")
         self._is_cancelled = True
+
+
+class ExportWorker(QObject):
+    """
+    A dedicated worker to generate and export a high-quality word cloud
+    in a background thread, preventing the UI from freezing.
+    """
+
+    finished = pyqtSignal(str)  # Emits the final filepath on success
+    error = pyqtSignal(str)  # Emits an error message on failure
+
+    def __init__(self, frequencies: Dict[str, float], options: Dict[str, Any], filepath: str, file_format: str):
+        super().__init__()
+        self.frequencies = frequencies
+        self.options = options
+        self.filepath = filepath
+        self.file_format = file_format
+
+    @pyqtSlot()
+    def run(self) -> None:
+        """The main execution method for the worker."""
+        try:
+            if not self.frequencies:
+                raise ValueError("No frequency data provided to generate the word cloud.")
+
+            # Generate the WordCloud object with the provided options
+            wc = WordCloud(
+                width=self.options.get("width", 1200),
+                height=self.options.get("height", 800),
+                scale=self.options.get("scale", 1),
+                background_color=self.options.get("background_color", "white"),
+                colormap=self.options.get("colormap", "viridis"),
+                max_words=self.options.get("max_words", 100),
+                mask=self.options.get("mask"),
+                contour_width=self.options.get("contour_width", 0),
+                contour_color=self.options.get("contour_color", "steelblue"),
+                relative_scaling=self.options.get("relative_scaling", 0.5),
+            ).generate_from_frequencies(self.frequencies)
+
+            # Export to the chosen format
+            if self.file_format == "png":
+                wc.to_file(self.filepath)
+            elif self.file_format == "svg":
+                svg_data = wc.to_svg(embed_font=True)
+                with open(self.filepath, "w", encoding="utf-8") as f:
+                    f.write(svg_data)
+
+            self.finished.emit(self.filepath)
+
+        except Exception as e:
+            logger.exception("Error during word cloud export worker execution.")
+            self.error.emit(str(e))
+
+
+class AnalysisWorker(QObject):
+    """
+    A dedicated worker to perform the initial, potentially long-running,
+    full analysis of the database. Emits a signal when done.
+    """
+
+    finished = pyqtSignal()
+
+    # --- INIZIO MODIFICHE ---
+    # Ora usiamo "AnalysisEngine" tra virgolette per il type hint,
+    # che è il modo corretto per gestire le forward reference in Python.
+    def __init__(self, analysis_engine: "AnalysisEngine"):
+        # --- FINE MODIFICHE ---
+        super().__init__()
+        self.analysis_engine = analysis_engine
+
+    @pyqtSlot()
+    def run(self) -> None:
+        """The main execution method for the worker."""
+        try:
+            logger.info("Starting full database analysis...")
+            self.analysis_engine.full_recalculation()
+            logger.info("Full database analysis finished successfully.")
+        except Exception as e:
+            logger.exception(f"A critical error occurred during full analysis: {e}")
+        finally:
+            # Emits the 'finished' signal in any case (success or failure),
+            # to always unblock the UI.
+            self.finished.emit()

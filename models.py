@@ -57,6 +57,8 @@ class Fic(BaseModel):
     is_in_history = BooleanField(default=False)
     last_visit_date = CharField(null=True)
     visit_count = IntegerField(null=True)
+    is_in_reading_queue = BooleanField(default=False)
+    queue_order = IntegerField(null=True)
 
     class Meta:
         table_name = "fics"
@@ -106,3 +108,12 @@ class Achievement(BaseModel):
 
     class Meta:
         table_name = "achievements"
+
+
+class SavedFilter(BaseModel):
+    id = AutoField()
+    name = CharField(unique=True)
+    filter_data = TextField()  # Salveremo i filtri come stringa JSON
+
+    class Meta:
+        table_name = "saved_filters"

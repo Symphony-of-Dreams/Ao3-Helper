@@ -1,5 +1,12 @@
 import constants as const
-from database import add_fic, calculate_base_stats, delete_fic, get_filtered_fics, update_fic_status
+from database import (
+    add_fic,
+    calculate_base_stats,
+    delete_fic,
+    get_activity_by_month,
+    get_filtered_fics,
+    update_fic_status,
+)
 from models import Fic
 
 BASE_FIC_DATA = {
@@ -118,3 +125,85 @@ def test_calculate_base_stats_with_data(db_connection):
     assert stats["fics_to_read"] == 1
     assert stats["fics_dropped"] == 1
     assert stats["total_words_read"] == 1000 + 2500
+
+
+def test_get_activity_by_month(db_connection):
+    """
+    Tests the activity aggregation logic with various filters and date fields.
+    """
+    # 1. Setup a controlled dataset
+    fics_data = [
+        # Fic 1: In Library & History, added Jan, updated Feb, visited Mar
+        {
+            **BASE_FIC_DATA,
+            "url": "fic1",
+            "is_in_library": True,
+            "is_in_history": True,
+            "date_added": "2025-01-10",
+            "date_updated": "2025-02-05",
+            "last_visit_date": "2025-03-15",
+        },
+        # Fic 2: In Library only, added Jan, updated Mar
+        {
+            **BASE_FIC_DATA,
+            "url": "fic2",
+            "is_in_library": True,
+            "is_in_history": False,
+            "date_added": "2025-01-20",
+            "date_updated": "2025-03-10",
+            "last_visit_date": None,
+        },
+        # Fic 3: In History only, added Feb, updated Feb, visited Apr
+        {
+            **BASE_FIC_DATA,
+            "url": "fic3",
+            "is_in_library": False,
+            "is_in_history": True,
+            "date_added": "2025-02-15",
+            "date_updated": "2025-02-20",
+            "last_visit_date": "2025-04-01",
+        },
+        # Fic 4: Not in library or history, added Feb
+        {
+            **BASE_FIC_DATA,
+            "url": "fic4",
+            "is_in_library": False,
+            "is_in_history": False,
+            "date_added": "2025-02-25",
+            "date_updated": "2025-02-26",
+            "last_visit_date": None,
+        },
+    ]
+    for fic in fics_data:
+        Fic.create(**fic)
+
+    # 2. Run tests with assertions
+
+    # Test case: All entries, grouped by date_added
+    result = get_activity_by_month(view_filter="all", date_field="date_added")
+    assert result == [("2025-01", 2), ("2025-02", 2)]
+
+    # Test case: Library entries, grouped by date_added
+    result = get_activity_by_month(view_filter="library", date_field="date_added")
+    assert result == [("2025-01", 2)]
+
+    # Test case: History entries, grouped by date_added
+    result = get_activity_by_month(view_filter="history", date_field="date_added")
+    assert result == [("2025-01", 1), ("2025-02", 1)]
+
+    # Test case: All entries, grouped by date_updated
+    result = get_activity_by_month(view_filter="all", date_field="date_updated")
+    assert result == [("2025-02", 3), ("2025-03", 1)]
+
+    # Test case: History entries, grouped by last_visit_date
+    result = get_activity_by_month(view_filter="history", date_field="last_visit_date")
+    assert result == [("2025-03", 1), ("2025-04", 1)]
+
+    # Test case: Library entries, grouped by last_visit_date (should have only one result)
+    result = get_activity_by_month(view_filter="library", date_field="last_visit_date")
+    assert result == [("2025-03", 1)]
+
+    # Test case: No results expected (no visit dates for fics only in library)
+    result = get_activity_by_month(view_filter="library", date_field="last_visit_date")
+    # Fic2 is in library but has no visit date, so the result for library fics by visit date should only be fic1
+    assert ("2025-01", 1) not in result

@@ -1,4 +1,4 @@
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 DB_NAME = "ao3_helper.db"
 
 LATEST_DB_VERSION = 6

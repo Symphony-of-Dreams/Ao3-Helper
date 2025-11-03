@@ -15,7 +15,7 @@ from peewee import (
 
 import constants as const
 
-db = SqliteDatabase(const.DB_NAME)
+db = SqliteDatabase(const.DB_PATH)
 
 
 class BaseModel(Model):

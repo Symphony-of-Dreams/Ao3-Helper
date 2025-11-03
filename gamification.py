@@ -3,7 +3,6 @@ from typing import Any, Dict
 import constants as const
 from database import (
     add_notification,
-    count_verified_statuses,
     get_unlocked_achievements,
     unlock_achievement,
 )
@@ -93,12 +92,14 @@ def calculate_xp_level(total_words_read: int) -> Dict[str, int]:
 def check_for_achievements(
     general_stats: Dict[str, int],
     chart_data: Dict[str, Any],
+    verified_stats: Dict[str, int],
     newly_modified_fic: Dict[str, Any] | None = None,
 ) -> bool:
     """
     Comprehensive function that checks if new achievements have been unlocked.
     :param general_stats: The dictionary of basic statistics.
     :param chart_data: Aggregated data for charts (e.g., top fandoms).
+    :param verified_stats: A dictionary with counts for 'kudos' and 'comments'.
     :param newly_modified_fic: (Optional) The data of the fic that triggered the check.
     """
     unlocked_ids = get_unlocked_achievements().keys()
@@ -122,7 +123,6 @@ def check_for_achievements(
     if total_fics_read >= 50 and const.ACH_50_FICS not in unlocked_ids:
         newly_unlocked.append(const.ACH_50_FICS)
 
-    verified_stats = count_verified_statuses()
     if verified_stats.get("kudos", 0) >= 1 and const.ACH_FIRST_KUDOS not in unlocked_ids:
         newly_unlocked.append(const.ACH_FIRST_KUDOS)
     if verified_stats.get("comments", 0) >= 1 and const.ACH_FIRST_COMMENT not in unlocked_ids:
@@ -134,11 +134,11 @@ def check_for_achievements(
         newly_unlocked.append(const.ACH_FANDOM_HOPPER)
 
     if newly_modified_fic:
-        if newly_modified_fic["word_count"] >= 100000 and const.ACH_MARATHON not in unlocked_ids:
-            if newly_modified_fic["status"] in const.COMPLETED_STATUSES:
+        if newly_modified_fic.get("word_count", 0) >= 100000 and const.ACH_MARATHON not in unlocked_ids:
+            if newly_modified_fic.get("status") in const.COMPLETED_STATUSES:
                 newly_unlocked.append(const.ACH_MARATHON)
 
-        if newly_modified_fic["user_rating"] == 5 and const.ACH_FIVE_STARS not in unlocked_ids:
+        if newly_modified_fic.get("user_rating") == 5 and const.ACH_FIVE_STARS not in unlocked_ids:
             newly_unlocked.append(const.ACH_FIVE_STARS)
 
     for ach_id in newly_unlocked:

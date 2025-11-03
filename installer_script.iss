@@ -32,3 +32,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Run]
 
 Filename: "{app}\AO3 Helper.exe"; Description: "{cm:LaunchProgram,AO3 Helper}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{userappdata}\AO3 Helper"
+Type: filesandordirs; Name: "{localappdata}\AO3 Helper"

@@ -1,7 +1,5 @@
-# dashboard_window.py
-
 import io
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -19,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayout,
     QMessageBox,
     QPushButton,
     QSlider,
@@ -45,17 +44,15 @@ class DashboardWindow(QDialog):
         self.setMinimumSize(1000, 750)
 
         self.analysis_engine = analysis_engine
-
         self.analysis_data: Dict[str, List[Dict[str, Any]]] = {}
         self.chart_data: Dict[str, Any] = {}
-
         self.current_mask_array: Optional[np.ndarray] = None
         self.last_generated_cloud_image: Optional[Image.Image] = None
 
         self.word_cloud_debounce_timer = QTimer(self)
         self.word_cloud_debounce_timer.setSingleShot(True)
         self.word_cloud_debounce_timer.setInterval(250)
-        self.word_cloud_debounce_timer.timeout.connect(self._update_word_cloud)
+        self.word_cloud_debounce_timer.timeout.connect(self._update_word_cloud_image)
 
         self.export_thread: Optional[QThread] = None
         self.export_worker: Optional[ExportWorker] = None
@@ -69,49 +66,49 @@ class DashboardWindow(QDialog):
         self.analysis_tab = QWidget()
         self.wordcloud_tab = QWidget()
 
+        self._build_overview_tab_ui()
+        self._build_analysis_tab_ui()
+        self._build_wordcloud_tab_ui()
+
         self.tabs.addTab(self.overview_tab, "📊 Overview")
         self.tabs.addTab(self.analysis_tab, "🧠 True Favorites Analysis")
         self.tabs.addTab(self.wordcloud_tab, "☁️ Pro Word Clouds")
 
-    def load_data_and_build_ui(self) -> None:
+    def populate_data_and_show(self) -> None:
         """
-        Recupera i dati più recenti dal motore di analisi e dal database,
-        quindi costruisce i componenti dell'interfaccia utente che dipendono da tali dati.
+        Fetches the latest data and populates the already-built UI components.
+        This is the main entry point to be called from the main window.
         """
-
-        logger.debug("DEBUG: DashboardWindow.load_data_and_build_ui() CHIAMATA.")
+        logger.debug("Dashboard: Fetching fresh data and populating UI.")
 
         self.analysis_data = self.analysis_engine.get_analysis_results()
         self.chart_data = get_data_for_charts(chart_filter="lette")
 
-        author_count = len(self.analysis_data.get("authors", []))
-        logger.debug(f"DEBUG: Dati ricevuti dalla dashboard. Conteggio autori: {author_count}.")
-        if author_count > 0:
-            logger.debug(f"DEBUG: Esempio dati autori ricevuti: {self.analysis_data['authors'][:3]}")
+        self._populate_overview_tab()
+        self._populate_analysis_tab()
+        self._populate_wordcloud_tab()
 
-        self._build_overview_tab()
-        self._build_analysis_tab()
-        self._build_wordcloud_tab()
+        self.exec()
 
-    def _build_overview_tab(self) -> None:
-        layout = QVBoxLayout(self.overview_tab)
-        top_row_layout = QHBoxLayout()
-        reread_group = QGroupBox("🏆 Most Reread Works (From History)")
-        self.reread_layout = QVBoxLayout(reread_group)
-        top_row_layout.addWidget(reread_group)
-        top_fandoms = self.chart_data.get("top_fandoms")
-        if top_fandoms:
-            top_row_layout.addWidget(self._create_pie_chart(top_fandoms, "Top 5 Fandoms (from read fics)"))
-        layout.addLayout(top_row_layout)
+    def _build_overview_tab_ui(self) -> None:
+        layout = QHBoxLayout(self.overview_tab)
+
+        left_panel_layout = QVBoxLayout()
+        self.reread_group = QGroupBox("🏆 Most Reread Works (From History)")
+        self.reread_layout = QVBoxLayout(self.reread_group)
+        left_panel_layout.addWidget(self.reread_group)
+        left_panel_layout.addStretch()
+
+        right_panel_layout = QVBoxLayout()
         activity_group = QGroupBox("📈 Activity Timeline")
         activity_group_layout = QVBoxLayout(activity_group)
-        self._setup_activity_chart(activity_group_layout)
-        layout.addWidget(activity_group)
-        layout.addStretch()
-        self._populate_reread_stats()
-        self._create_activity_chart()
+        self._setup_activity_chart_controls(activity_group_layout)
+        right_panel_layout.addWidget(activity_group)
 
-    def _build_analysis_tab(self) -> None:
+        layout.addLayout(left_panel_layout, 1)
+        layout.addLayout(right_panel_layout, 2)
+
+    def _build_analysis_tab_ui(self) -> None:
         layout = QVBoxLayout(self.analysis_tab)
         info_label = QLabel(
             "This analysis calculates a weighted score for every author, tag, fandom, etc., based on your reading habits.<br>"  # noqa: E501
@@ -120,17 +117,23 @@ class DashboardWindow(QDialog):
         )
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        analysis_tabs = QTabWidget()
-        layout.addWidget(analysis_tabs)
-        analysis_tabs.addTab(self._create_analysis_table(self.analysis_data.get("authors", [])), "✒️ Authors")
-        analysis_tabs.addTab(self._create_analysis_table(self.analysis_data.get("fandoms", [])), "🌌 Fandoms")
-        analysis_tabs.addTab(self._create_analysis_table(self.analysis_data.get("tags", [])), "🏷️ Tags")
-        analysis_tabs.addTab(
-            self._create_analysis_table(self.analysis_data.get("relationships", [])), "💞 Relationships"
-        )
-        analysis_tabs.addTab(self._create_analysis_table(self.analysis_data.get("characters", [])), "👥 Characters")
 
-    def _build_wordcloud_tab(self) -> None:
+        self.analysis_tabs = QTabWidget()
+        layout.addWidget(self.analysis_tabs)
+
+        self.authors_table = self._create_analysis_table_widget()
+        self.fandoms_table = self._create_analysis_table_widget()
+        self.tags_table = self._create_analysis_table_widget()
+        self.relationships_table = self._create_analysis_table_widget()
+        self.characters_table = self._create_analysis_table_widget()
+
+        self.analysis_tabs.addTab(self.authors_table, "✒️ Authors")
+        self.analysis_tabs.addTab(self.fandoms_table, "🌌 Fandoms")
+        self.analysis_tabs.addTab(self.tags_table, "🏷️ Tags")
+        self.analysis_tabs.addTab(self.relationships_table, "💞 Relationships")
+        self.analysis_tabs.addTab(self.characters_table, "👥 Characters")
+
+    def _build_wordcloud_tab_ui(self) -> None:
         layout = QVBoxLayout(self.wordcloud_tab)
         source_layout = QHBoxLayout()
         source_layout.addWidget(QLabel("<b>Show Word Cloud For:</b>"))
@@ -143,12 +146,15 @@ class DashboardWindow(QDialog):
         source_layout.addWidget(self.cloud_source_combo)
         source_layout.addStretch()
         layout.addLayout(source_layout)
+
         self.cloud_view = QGraphicsView()
         self.cloud_scene = QGraphicsScene()
         self.cloud_view.setScene(self.cloud_scene)
         layout.addWidget(self.cloud_view)
+
         controls_group = QGroupBox("Customization")
         controls_layout = QVBoxLayout(controls_group)
+
         row1_layout = QHBoxLayout()
         row1_layout.addWidget(QLabel("Max Words:"))
         self.max_words_slider = QSlider(Qt.Orientation.Horizontal)
@@ -194,15 +200,128 @@ class DashboardWindow(QDialog):
         controls_layout.addLayout(row3_layout)
         controls_layout.addLayout(row4_layout)
         layout.addWidget(controls_group)
-        self.cloud_source_combo.currentIndexChanged.connect(self._update_word_cloud)
+
+        self.cloud_source_combo.currentIndexChanged.connect(self._update_word_cloud_image)
         self.max_words_slider.valueChanged.connect(self._on_slider_value_changed)
         self.scaling_slider.valueChanged.connect(self._on_slider_value_changed)
-        self.colormap_combo.currentIndexChanged.connect(self._update_word_cloud)
-        self.bg_button.toggled.connect(self._update_word_cloud)
+        self.colormap_combo.currentIndexChanged.connect(self._update_word_cloud_image)
+        self.bg_button.toggled.connect(self._update_word_cloud_image)
         self.mask_button.clicked.connect(self._select_mask_image)
         self.remove_mask_button.clicked.connect(self._remove_mask)
         self.save_cloud_button.clicked.connect(self._start_export_process)
-        self._update_word_cloud()
+
+    def _populate_overview_tab(self):
+        self._populate_reread_stats()
+        self._create_activity_chart()
+
+    def _populate_analysis_tab(self):
+        self._populate_analysis_table(self.authors_table, self.analysis_data.get("authors", []))
+        self._populate_analysis_table(self.fandoms_table, self.analysis_data.get("fandoms", []))
+        self._populate_analysis_table(self.tags_table, self.analysis_data.get("tags", []))
+        self._populate_analysis_table(self.relationships_table, self.analysis_data.get("relationships", []))
+        self._populate_analysis_table(self.characters_table, self.analysis_data.get("characters", []))
+
+    def _populate_wordcloud_tab(self):
+        self._update_word_cloud_image()
+
+    def _clear_layout(self, layout: Optional[QLayout]):
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+                else:
+                    sub_layout = item.layout()
+                    if sub_layout:
+                        self._clear_layout(sub_layout)
+
+    def _populate_reread_stats(self) -> None:
+        self._clear_layout(self.reread_layout)
+        top_fics = get_reread_statistics(limit=5)
+        if not top_fics:
+            self.reread_layout.addWidget(QLabel("<i>Start revisiting fics to see your favorites here!</i>"))
+            return
+        icons = ["🥇", "🥈", "🥉", "4.", "5."]
+        for i, fic in enumerate(top_fics):
+            icon = icons[i] if i < len(icons) else f"{i+1}."
+            label_text = f"<b>{icon} {fic.get('title', 'N/A')}</b> by {fic.get('author', 'N/A')} ({fic.get('visit_count', 0)} visits)"  # noqa: E501
+            label = QLabel(label_text)
+            if i < 3:
+                label.setStyleSheet("padding: 5px; font-size: 14px;")
+            self.reread_layout.addWidget(label)
+        self.reread_layout.addStretch()
+
+    def _create_analysis_table_widget(self) -> QTableWidget:
+        table = QTableWidget()
+        headers = ["Name", "Total Score (TWS)", "Intensity (AWS)", "Unique Fics"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setSortingEnabled(True)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        header = table.horizontalHeader()
+        if header:
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        return table
+
+    def _populate_analysis_table(self, table: QTableWidget, data: List[Dict[str, Any]]) -> None:
+        table.setSortingEnabled(False)
+        table.clearContents()
+        table.setRowCount(len(data))
+        for row, item in enumerate(data):
+            table.setItem(row, 0, QTableWidgetItem(str(item.get("name"))))
+            table.setItem(row, 1, NumericTableWidgetItem(str(item.get("tws"))))
+            table.setItem(row, 2, NumericTableWidgetItem(str(item.get("aws"))))
+            table.setItem(row, 3, NumericTableWidgetItem(str(item.get("fic_count"))))
+        table.setSortingEnabled(True)
+        table.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+
+    def _setup_activity_chart_controls(self, parent_layout: QVBoxLayout):
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(QLabel("<b>Show Data For:</b>"))
+        self.view_filter_combo = QComboBox()
+        self.view_filter_combo.addItems(["All Entries", "My Library", "My History"])
+        controls_layout.addWidget(self.view_filter_combo)
+        controls_layout.addSpacing(20)
+        controls_layout.addWidget(QLabel("<b>Group By Date Of:</b>"))
+        self.date_filter_combo = QComboBox()
+        self.date_filter_combo.addItems(["Fic Last Updated", "Date Added to App", "My Last Visit (from History)"])
+        controls_layout.addWidget(self.date_filter_combo)
+        controls_layout.addStretch()
+        parent_layout.addLayout(controls_layout)
+        self.chart_layout = QVBoxLayout()
+        parent_layout.addLayout(self.chart_layout)
+        self.view_filter_combo.currentIndexChanged.connect(self._create_activity_chart)
+        self.date_filter_combo.currentIndexChanged.connect(self._create_activity_chart)
+
+    def _create_activity_chart(self) -> None:
+        view_filter_map = {0: "all", 1: "library", 2: "history"}
+        view_choice = view_filter_map.get(self.view_filter_combo.currentIndex(), "all")
+        date_filter_map = {0: "date_updated", 1: "date_added", 2: "last_visit_date"}
+        date_choice = date_filter_map.get(self.date_filter_combo.currentIndex(), "date_updated")
+        data = get_activity_by_month(view_filter=view_choice, date_field=date_choice)
+
+        self._clear_layout(self.chart_layout)
+
+        if not data:
+            self.chart_layout.addWidget(QLabel("<i>No data available for the selected filters.</i>"))
+            return
+
+        months, counts = zip(*data)
+        fig = Figure(figsize=(10, 5), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.bar(months, counts, color="#007acc")
+        ax.set_title(f"Fics Per Month (Grouped by {self.date_filter_combo.currentText()})")
+        ax.set_ylabel("Number of Fics")
+        ax.tick_params(axis="x", labelrotation=45)
+        fig.tight_layout()
+        canvas = FigureCanvas(fig)
+        self.chart_layout.addWidget(canvas)
 
     def _on_slider_value_changed(self):
         self.word_cloud_debounce_timer.start()
@@ -213,25 +332,30 @@ class DashboardWindow(QDialog):
             try:
                 self.current_mask_array = np.array(Image.open(filepath))
                 self.remove_mask_button.setEnabled(True)
-                self._update_word_cloud()
+                self._update_word_cloud_image()
             except Exception as e:
-                print(f"Error loading mask image: {e}")
+                logger.error(f"Error loading mask image: {e}")
                 self.current_mask_array = None
 
     def _remove_mask(self):
         self.current_mask_array = None
         self.remove_mask_button.setEnabled(False)
-        self._update_word_cloud()
+        self._update_word_cloud_image()
 
-    def _generate_wordcloud_object_preview(self) -> Optional[WordCloud]:
+    def _update_word_cloud_image(self):
+        self.cloud_scene.clear()
         entity_key = self.cloud_source_combo.currentData()
         source_data = self.analysis_data.get(entity_key, [])
         if not source_data:
-            return None
+            self.cloud_scene.addText("No data to display for this category.")
+            return
+
         frequencies = {item["name"]: item["tws"] for item in source_data}
         if not frequencies:
-            return None
-        return WordCloud(
+            self.cloud_scene.addText("No data to display for this category.")
+            return
+
+        wc = WordCloud(
             width=1200,
             height=800,
             scale=2,
@@ -244,11 +368,6 @@ class DashboardWindow(QDialog):
             relative_scaling=self.scaling_slider.value() / 100.0,
         ).generate_from_frequencies(frequencies)
 
-    def _update_word_cloud(self):
-        self.cloud_scene.clear()
-        wc = self._generate_wordcloud_object_preview()
-        if not wc:
-            return
         self.last_generated_cloud_image = wc.to_image()
         buf = io.BytesIO()
         self.last_generated_cloud_image.save(buf, format="PNG")
@@ -257,6 +376,7 @@ class DashboardWindow(QDialog):
         self.cloud_view.fitInView(self.cloud_scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _start_export_process(self):
+
         if self.export_thread and self.export_thread.isRunning():
             QMessageBox.warning(self, "In Progress", "An export is already running. Please wait.")
             return
@@ -308,125 +428,3 @@ class DashboardWindow(QDialog):
         if self.wait_dialog:
             self.wait_dialog.close()
         QMessageBox.critical(self, "Error", f"Failed to export image.\n\nError: {error_message}")
-
-    def _create_analysis_table(self, data: List[Dict[str, Any]]) -> QWidget:
-        if not data:
-            label = QLabel("<i>No analysis data available for this category.</i>")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            return label
-        table = QTableWidget()
-        headers = ["Name", "Total Score (TWS)", "Intensity (AWS)", "Unique Fics"]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setRowCount(len(data))
-        for row, item in enumerate(data):
-            table.setItem(row, 0, QTableWidgetItem(str(item.get("name"))))
-            table.setItem(row, 1, NumericTableWidgetItem(str(item.get("tws"))))
-            table.setItem(row, 2, NumericTableWidgetItem(str(item.get("aws"))))
-            table.setItem(row, 3, NumericTableWidgetItem(str(item.get("fic_count"))))
-        table.setSortingEnabled(True)
-        table.sortByColumn(1, Qt.SortOrder.DescendingOrder)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        header = table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        return table
-
-    def _setup_activity_chart(self, parent_layout: QVBoxLayout):
-        controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("<b>Show Data For:</b>"))
-        self.view_filter_combo = QComboBox()
-        self.view_filter_combo.addItems(["All Entries", "My Library", "My History"])
-        controls_layout.addWidget(self.view_filter_combo)
-        controls_layout.addSpacing(20)
-        controls_layout.addWidget(QLabel("<b>Group By Date Of:</b>"))
-        self.date_filter_combo = QComboBox()
-        self.date_filter_combo.addItems(["Fic Last Updated", "Date Added to App", "My Last Visit (from History)"])
-        controls_layout.addWidget(self.date_filter_combo)
-        controls_layout.addStretch()
-        parent_layout.addLayout(controls_layout)
-        self.chart_layout = QVBoxLayout()
-        parent_layout.addLayout(self.chart_layout)
-        self.view_filter_combo.currentIndexChanged.connect(self._create_activity_chart)
-        self.date_filter_combo.currentIndexChanged.connect(self._create_activity_chart)
-
-    def _create_pie_chart(self, data: List[Tuple[str, int]], title: str) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel(f"<b>{title}</b>"))
-        values = [item[1] for item in data]
-        fig = Figure(figsize=(5, 4), dpi=100)
-        fig.subplots_adjust(left=0.1, right=0.6)
-        ax = fig.add_subplot(111)
-
-        wedges, *_ = ax.pie(values, startangle=90, textprops={"color": "w"})
-
-        ax.axis("equal")
-        ax.legend(
-            wedges,
-            [f"{label} ({value})" for label, value in data],
-            title="Legend",
-            loc="center left",
-            bbox_to_anchor=(1.1, 0.5),
-        )
-        canvas = FigureCanvas(fig)
-        layout.addWidget(canvas)
-        return widget
-
-    def _populate_reread_stats(self) -> None:
-        top_fics = get_reread_statistics(limit=5)
-        for i in reversed(range(self.reread_layout.count())):
-            item = self.reread_layout.itemAt(i)
-            if item:
-                widget = item.widget()
-                if widget:
-                    widget.setParent(None)
-        if not top_fics:
-            self.reread_layout.addWidget(QLabel("<i>Start revisiting fics to see your favorites here!</i>"))
-            return
-        icons = ["🥇", "🥈", "🥉", "4.", "5."]
-        for i, fic in enumerate(top_fics):
-            icon = icons[i] if i < len(icons) else f"{i+1}."
-            label_text = f"<b>{icon} {fic.get('title', 'N/A')}</b> by {fic.get('author', 'N/A')} ({fic.get('visit_count', 0)} visits)"  # noqa: E501
-            label = QLabel(label_text)
-            if i < 3:
-                label.setStyleSheet("padding: 5px; font-size: 14px;")
-            self.reread_layout.addWidget(label)
-
-    def _create_activity_chart(self) -> None:
-        view_filter_map = {0: "all", 1: "library", 2: "history"}
-        view_choice = view_filter_map.get(self.view_filter_combo.currentIndex(), "all")
-        date_filter_map = {0: "date_updated", 1: "date_added", 2: "last_visit_date"}
-        date_choice = date_filter_map.get(self.date_filter_combo.currentIndex(), "date_updated")
-        data = get_activity_by_month(view_filter=view_choice, date_field=date_choice)
-
-        for i in reversed(range(self.chart_layout.count())):
-            item = self.chart_layout.itemAt(i)
-            if item:
-                widget = item.widget()
-                if widget:
-                    widget.setParent(None)
-
-        if not data:
-            self.chart_layout.addWidget(QLabel("<i>No data available for the selected filters.</i>"))
-            return
-
-        if not all(isinstance(item, (list, tuple)) and len(item) == 2 for item in data):
-            self.chart_layout.addWidget(QLabel("<i>Data is present but invalid for charting.</i>"))
-            return
-
-        months = [item[0] for item in data]
-        counts = [item[1] for item in data]
-
-        fig = Figure(figsize=(10, 5), dpi=100)
-        ax = fig.add_subplot(111)
-        ax.bar(months, counts, color="#007acc")
-        ax.set_title(f"Fics Per Month (Grouped by {self.date_filter_combo.currentText()})")
-        ax.set_ylabel("Number of Fics")
-        ax.tick_params(axis="x", labelrotation=45)
-        fig.tight_layout()
-        canvas = FigureCanvas(fig)
-        self.chart_layout.addWidget(canvas)

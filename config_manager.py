@@ -10,7 +10,7 @@ class ConfigManager:
     filename: str
     config: configparser.ConfigParser
 
-    def __init__(self, filename: str = "config.ini") -> None:
+    def __init__(self, filename: str = const.CONFIG_PATH) -> None:
         """
         Loads the configuration from the file.
         Ensures all necessary sections and default values exist.
@@ -98,4 +98,4 @@ class ConfigManager:
         logger.debug(f"Set config key '{key}' in section '{section}' to '{value}'.")
 
 
-config_manager = ConfigManager()
+config_manager = ConfigManager(const.CONFIG_PATH)

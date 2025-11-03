@@ -187,9 +187,12 @@ class RecommendationCenterDialog(QDialog):
         selected_items = self.internal_table.selectedItems()
         if not selected_items:
             return
-        url = self.internal_table.item(selected_items[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-        self.fic_selected.emit(url)
-        self.accept()
+
+        item = self.internal_table.item(selected_items[0].row(), 0)
+        if item:
+            url = item.data(Qt.ItemDataRole.UserRole)
+            self.fic_selected.emit(url)
+            self.accept()
 
     def _on_discover(self) -> None:
         strategy_map = {"The Safe Bet": "safe_bet", "The Hidden Gem": "hidden_gem", "The Wildcard": "wildcard"}

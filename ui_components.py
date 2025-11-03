@@ -1,5 +1,3 @@
-# ui_components.py
-
 from PyQt6.QtWidgets import QCompleter, QTableWidgetItem
 
 

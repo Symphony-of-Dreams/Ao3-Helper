@@ -13,157 +13,119 @@ from logger_setup import logger
 from models import Achievement, Fic, FicTag, Notification, SavedFilter, UserTag, db
 
 
-def initialize_database() -> None:
-    try:
-        with sqlite3.connect(const.DB_NAME) as conn:
-            c = conn.cursor()
-            c.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fics (
-                    url TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT, fandoms TEXT,
-                    tags TEXT, rating TEXT, word_count INTEGER, summary TEXT, status TEXT NOT NULL,
-                    date_added TEXT, user_notes TEXT, user_rating INTEGER, category TEXT,
-                    relationships TEXT, characters TEXT, is_complete INTEGER NOT NULL DEFAULT 0,
-                    status_verified INTEGER NOT NULL DEFAULT 0
-                )"""
-            )
-            c.execute(
-                """
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL, timestamp TEXT NOT NULL,
-                    is_read INTEGER NOT NULL DEFAULT 0, related_url TEXT
-                )"""
-            )
-            c.execute(
-                """
-                CREATE TABLE IF NOT EXISTS achievements (
-                    id TEXT PRIMARY KEY,
-                    unlocked_date TEXT NOT NULL
-                )"""
-            )
-        logger.info("Database initialized successfully.")
-    except sqlite3.Error as e:
-        logger.exception(f"Database initialization failed: {e}")
-
-
 def run_database_migrations() -> None:
     """
-    Checks the database version and applies necessary migrations.
+    Ensures the database schema is up to date.
+    - For new databases, creates the full, modern schema using the ORM.
+    - For existing databases, applies manual migrations to add columns.
     """
+    from models import (
+        Achievement,
+        Fic,
+        FicTag,
+        Notification,
+        SavedFilter,
+        UserTag,
+        db,
+    )
+
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
-            c = conn.cursor()
-            current_version = c.execute("PRAGMA user_version").fetchone()[0]
-            logger.info(f"DB version: Current is v{current_version}, Latest is v{const.LATEST_DB_VERSION}.")
 
-            if current_version < const.LATEST_DB_VERSION:
-                logger.warning(f"DB schema is outdated. Migrating from v{current_version}...")
+        db.connect(reuse_if_open=True)
 
-                if current_version < 2:
-                    logger.info("Applying migration to v2: Creating user_tags and fic_tags tables...")
-                    try:
-                        c.execute(
+        if not db.table_exists("fics"):
+            logger.warning("Database file not found or is empty. Creating new schema from models...")
+
+            db.create_tables([Fic, UserTag, FicTag, Notification, Achievement, SavedFilter])
+
+            db.execute_sql(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
+            logger.info("New database schema created successfully.")
+        else:
+
+            with sqlite3.connect(const.DB_PATH) as conn:
+                c = conn.cursor()
+                current_version = c.execute("PRAGMA user_version").fetchone()[0]
+                logger.info(f"DB version: Current is v{current_version}, Latest is v{const.LATEST_DB_VERSION}.")
+
+                if current_version < const.LATEST_DB_VERSION:
+                    logger.warning(f"DB schema is outdated. Applying incremental migrations from v{current_version}...")
+
+                    if current_version < 3:
+                        logger.info("Applying migration to v3: Adding data columns...")
+                        try:
+                            columns_to_add = {
+                                "series_name": "TEXT",
+                                "series_url": "TEXT",
+                                "series_part": "INTEGER",
+                                "chapters": "TEXT",
+                                "date_published": "TEXT",
+                                "date_updated": "TEXT",
+                                "source": "TEXT DEFAULT 'manual'",
+                                "last_read_date": "TEXT",
+                                "visit_count": "INTEGER",
+                                "language": "TEXT",
+                                "hits": "INTEGER",
+                                "kudos": "INTEGER",
+                                "bookmarks": "INTEGER",
+                                "comments": "INTEGER",
+                            }
+                            for col_name, col_type in columns_to_add.items():
+                                try:
+                                    c.execute(f"ALTER TABLE fics ADD COLUMN {col_name} {col_type}")
+                                except sqlite3.OperationalError:
+                                    logger.debug(f"Column {col_name} likely already exists.")
+                            logger.info("Successfully applied v3 schema changes.")
+                        except Exception as e:
+                            logger.error(f"Failed during v3 migration: {e}")
+
+                    if current_version < 4:
+                        logger.info("Applying migration to v4: Adding history/library flags...")
+                        try:
+
+                            c.execute("ALTER TABLE fics ADD COLUMN is_in_library INTEGER DEFAULT 1")
+                            c.execute("ALTER TABLE fics ADD COLUMN is_in_history INTEGER DEFAULT 0")
+                            c.execute("ALTER TABLE fics ADD COLUMN last_visit_date TEXT")
+                            c.execute("ALTER TABLE fics ADD COLUMN visit_count INTEGER")
+                            logger.info("Successfully added all columns for v4.")
+                        except sqlite3.OperationalError:
+                            logger.debug("Columns for v4 likely already exist.")
+
+                    if current_version < 5:
+                        logger.info("Applying migration to v5: Adding Reading Queue columns...")
+                        try:
+                            c.execute("ALTER TABLE fics ADD COLUMN is_in_reading_queue INTEGER DEFAULT 0")
+                            c.execute("ALTER TABLE fics ADD COLUMN queue_order INTEGER")
+                            logger.info("Successfully added columns for v5.")
+                        except sqlite3.OperationalError:
+                            logger.debug("Columns for v5 likely already exist.")
+
+                    if current_version < 6:
+                        logger.info("Applying migration to v6: Creating saved_filters table...")
+                        try:
+                            c.execute(
+                                """
+                                CREATE TABLE saved_filters (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    name TEXT NOT NULL UNIQUE,
+                                    filter_data TEXT NOT NULL
+                                )
                             """
-                            CREATE TABLE user_tags (
-                                tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                name TEXT NOT NULL UNIQUE
                             )
-                        """
-                        )
-                        c.execute(
-                            """
-                            CREATE TABLE fic_tags (
-                                fic_url TEXT NOT NULL,
-                                tag_id INTEGER NOT NULL,
-                                PRIMARY KEY (fic_url, tag_id),
-                                FOREIGN KEY (fic_url) REFERENCES fics (url) ON DELETE CASCADE,
-                                FOREIGN KEY (tag_id) REFERENCES user_tags (tag_id) ON DELETE CASCADE
-                            )
-                        """
-                        )
-                        logger.info("Successfully created tag tables for v2.")
-                    except sqlite3.OperationalError as e:
-                        logger.warning(
-                            f"Could not create tag tables, they might exist already. This is usually safe. Error: {e}"
-                        )
+                            logger.info("Successfully created table for v6.")
+                        except sqlite3.OperationalError:
+                            logger.debug("Table 'saved_filters' likely already exists.")
 
-                if current_version < 3:
-                    logger.info("Applying migration to v3: Adding 14 new data columns...")
-                    try:
-                        columns_to_add = {
-                            "series_name": "TEXT",
-                            "series_url": "TEXT",
-                            "series_part": "INTEGER",
-                            "chapters": "TEXT",
-                            "date_published": "TEXT",
-                            "date_updated": "TEXT",
-                            "source": "TEXT DEFAULT 'manual'",
-                            "last_read_date": "TEXT",
-                            "visit_count": "INTEGER",
-                            "language": "TEXT",
-                            "hits": "INTEGER",
-                            "kudos": "INTEGER",
-                            "bookmarks": "INTEGER",
-                            "comments": "INTEGER",
-                        }
-                        for col_name, col_type in columns_to_add.items():
-                            c.execute(f"ALTER TABLE fics ADD COLUMN {col_name} {col_type}")
-                        logger.info("Successfully added all columns for v3.")
-                    except sqlite3.OperationalError as e:
-                        logger.warning(
-                            f"Could not add all columns for v3, some might exist already. This is usually safe. Error: {e}"  # noqa: E501
-                        )
-                if current_version < 4:
-                    logger.info("Applying migration to v4: Adding history and library flags...")
-                    try:
+                    c.execute(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
+                    logger.info("Database migration successful.")
+                else:
+                    logger.info("Database schema is up to date.")
 
-                        c.execute("ALTER TABLE fics ADD COLUMN is_in_library INTEGER DEFAULT 1")
-
-                        c.execute("ALTER TABLE fics ADD COLUMN is_in_history INTEGER DEFAULT 0")
-                        c.execute("ALTER TABLE fics ADD COLUMN last_visit_date TEXT")
-                        c.execute("ALTER TABLE fics ADD COLUMN visit_count INTEGER")
-                        logger.info("Successfully added all columns for v4.")
-                    except sqlite3.OperationalError as e:
-                        logger.warning(
-                            f"Could not add all columns for v4, some might exist already. This is usually safe. Error: {e}"  # noqa: E501
-                        )
-                if current_version < 5:
-                    logger.info("Applying migration to v5: Adding Reading Queue columns...")
-                    try:
-                        c.execute("ALTER TABLE fics ADD COLUMN is_in_reading_queue INTEGER DEFAULT 0")
-                        c.execute("ALTER TABLE fics ADD COLUMN queue_order INTEGER")
-                        logger.info("Successfully added columns for v5.")
-                    except sqlite3.OperationalError as e:
-                        logger.warning(
-                            f"Could not add columns for v5, they might exist already. This is usually safe. Error: {e}"
-                        )
-                if current_version < 6:
-                    logger.info("Applying migration to v6: Creating saved_filters table...")
-                    try:
-                        c.execute(
-                            """
-                            CREATE TABLE saved_filters (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                name TEXT NOT NULL UNIQUE,
-                                filter_data TEXT NOT NULL
-                            )
-                        """
-                        )
-                        logger.info("Successfully created table for v6.")
-                    except sqlite3.OperationalError as e:
-                        logger.warning(
-                            f"Could not create table for v6, it might exist already. This is usually safe. Error: {e}"
-                        )
-
-                logger.info(f"Setting database version to {const.LATEST_DB_VERSION}.")
-                c.execute(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
-                logger.info("Database migration successful.")
-            else:
-                logger.info("Database schema is up to date.")
-
-    except sqlite3.Error as e:
-        logger.exception(f"A critical error occurred during database migration: {e}")
+    except Exception as e:
+        logger.exception(f"A critical error occurred during database setup/migration: {e}")
         raise
+    finally:
+        if not db.is_closed():
+            db.close()
 
 
 def add_fic(fic_details: Dict[str, Any]) -> bool:
@@ -348,7 +310,7 @@ def get_unlocked_achievements() -> Dict[str, str]:
 def count_verified_statuses() -> Dict[str, int]:
     counts = {"kudos": 0, "comments": 0}
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             c = conn.cursor()
             c.execute(
                 "SELECT COUNT(*) FROM fics WHERE status = ? AND status_verified = 1",
@@ -648,7 +610,7 @@ def mark_notifications_as_read() -> None:
 
 def count_read_uncommented_fics() -> int:
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             return conn.execute("SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_READ,)).fetchone()[0]
     except sqlite3.Error as e:
         logger.exception(f"Failed to count read/uncommented fics: {e}")
@@ -681,7 +643,7 @@ def update_fic_data(url: str, data: Dict[str, Any]) -> None:
 
 def get_existing_urls() -> Set[str]:
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             return {r[0] for r in conn.execute("SELECT url FROM fics").fetchall()}
     except sqlite3.Error as e:
         logger.exception(f"Failed to get existing URLs: {e}")
@@ -732,7 +694,7 @@ def calculate_base_stats() -> Dict[str, int]:
 def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str, int]]]:
     data: Dict[str, Any] = {"top_fandoms": {}, "top_ratings": {}, "status_breakdown": {}, "top_categories": {}}
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             where_clause = (
@@ -779,7 +741,7 @@ def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str
 def get_frequencies_for_wordclouds(cloud_filter: str = "lette") -> Dict[str, Dict[str, int]]:
     freq: Dict[str, Dict[str, int]] = {"tags": {}, "relationships": {}, "characters": {}}
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             where_clause = (
@@ -847,7 +809,7 @@ def get_data_for_publication_year_chart(chart_filter: str = "lette") -> List[Tup
     """
 
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             c = conn.cursor()
             c.execute(query, params)
             return c.fetchall()
@@ -899,7 +861,7 @@ def bulk_update_status(urls: List[str], new_status: str) -> None:
     if not urls:
         return
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             c = conn.cursor()
             placeholders = ",".join("?" for _ in urls)
             query = f"UPDATE fics SET status = ? WHERE url IN ({placeholders})"
@@ -915,7 +877,7 @@ def bulk_add_tags(urls: List[str], tags_to_add: List[str]) -> None:
     if not urls or not tags_to_add:
         return
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             c = conn.cursor()
             tag_ids = [get_or_create_tag(tag_name) for tag_name in tags_to_add]
             valid_tag_ids = [tid for tid in tag_ids if tid is not None]
@@ -933,7 +895,7 @@ def bulk_remove_tags(urls: List[str], tags_to_remove: List[str]) -> None:
     if not urls or not tags_to_remove:
         return
     try:
-        with sqlite3.connect(const.DB_NAME) as conn:
+        with sqlite3.connect(const.DB_PATH) as conn:
             c = conn.cursor()
             tag_placeholders = ",".join("?" for _ in tags_to_remove)
             c.execute(f"SELECT tag_id FROM user_tags WHERE name IN ({tag_placeholders})", tags_to_remove)

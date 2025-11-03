@@ -47,7 +47,10 @@ class ReadingQueueDialog(QDialog):
         button_layout.addWidget(self.close_button)
         main_layout.addLayout(button_layout)
 
-        self.queue_list.model().rowsMoved.connect(self._on_order_changed)
+        model = self.queue_list.model()
+        if model:
+            model.rowsMoved.connect(self._on_order_changed)
+
         self.queue_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.queue_list.itemDoubleClicked.connect(self._on_select_button_clicked)
 
@@ -78,12 +81,16 @@ class ReadingQueueDialog(QDialog):
         urls_affected = []
         for i in range(self.queue_list.count()):
             item = self.queue_list.item(i)
-            url = item.data(Qt.ItemDataRole.UserRole)
-            updates.append((url, i + 1))
-            urls_affected.append(url)
 
-        update_queue_order(updates)
-        self.queue_changed.emit(urls_affected)
+            if item:
+                url = item.data(Qt.ItemDataRole.UserRole)
+                if url:
+                    updates.append((url, i + 1))
+                    urls_affected.append(url)
+
+        if updates:
+            update_queue_order(updates)
+            self.queue_changed.emit(urls_affected)
 
     def _on_selection_changed(self) -> None:
         """Abilita/disabilita i pulsanti in base alla selezione."""
@@ -97,9 +104,11 @@ class ReadingQueueDialog(QDialog):
         if not selected_items:
             return
 
-        url = selected_items[0].data(Qt.ItemDataRole.UserRole)
-        self.fic_selected.emit(url)
-        self.accept()
+        item = selected_items[0]
+        if item:
+            url = item.data(Qt.ItemDataRole.UserRole)
+            self.fic_selected.emit(url)
+            self.accept()
 
     def _on_remove_button_clicked(self) -> None:
         """Rimuove le opere selezionate dalla coda."""
@@ -117,7 +126,10 @@ class ReadingQueueDialog(QDialog):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            urls_to_remove = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
-            remove_fics_from_queue(urls_to_remove)
-            self.queue_changed.emit(urls_to_remove)
-            self._load_queue()
+
+            urls_to_remove = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items if item is not None]
+
+            if urls_to_remove:
+                remove_fics_from_queue(urls_to_remove)
+                self.queue_changed.emit(urls_to_remove)
+                self._load_queue()

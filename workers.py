@@ -1,6 +1,6 @@
 import random
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, cast
 
 import AO3
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -27,7 +27,7 @@ class BaseImportWorker(QObject):
 
     finished = pyqtSignal()
     progress = pyqtSignal(int, int)
-    new_fic_added = pyqtSignal()
+    new_fic_added = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self, identifier: str) -> None:
@@ -85,8 +85,9 @@ class BaseImportWorker(QObject):
             try:
                 data = ao3_client.fetch_fic_data(fic_url)
                 if data:
-                    add_fic(data)
-                    self.new_fic_added.emit()
+                    if add_fic(data):
+
+                        self.new_fic_added.emit(data)
 
                 time.sleep(const.DEFAULT_REQUEST_DELAY)
 
@@ -101,17 +102,33 @@ class BaseImportWorker(QObject):
 class AddFicWorker(QObject):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
+    private_fic_detected = pyqtSignal(str)
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, use_auth_fallback: bool = False):
         super().__init__()
         self.url = url
+        self.use_auth_fallback = use_auth_fallback
 
     @pyqtSlot()
     def run(self):
         logger.info(f"AddFicWorker started for URL: {self.url}")
         try:
-            data = ao3_client.fetch_fic_data(self.url)
-            self.finished.emit(data)
+            data = ao3_client.fetch_fic_data(self.url, authenticated_fallback=self.use_auth_fallback)
+
+            if data:
+
+                self.finished.emit(data)
+            else:
+
+                if not self.use_auth_fallback and ao3_client.session:
+
+                    self.private_fic_detected.emit(self.url)
+
+                    self.finished.emit(None)
+                else:
+
+                    self.error.emit("Could not retrieve data. The work might be deleted or you are not logged in.")
+
         except Exception as e:
             logger.exception(f"Exception in AddFicWorker for URL {self.url}")
             self.error.emit(str(e))
@@ -166,7 +183,7 @@ class ImportHistoryWorker(QObject):
 
     finished = pyqtSignal()
     progress = pyqtSignal(int, int)
-    new_fic_added = pyqtSignal()
+    new_fic_added = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self) -> None:
@@ -252,7 +269,7 @@ class ImportHistoryWorker(QObject):
                         data["visit_count"] = item.get("visit_count")
                         created, _ = add_or_update_fic_from_history(data)
                         if created:
-                            self.new_fic_added.emit()
+                            self.new_fic_added.emit(data)
 
                             existing_urls.add(fic_url)
 
@@ -289,7 +306,9 @@ class ImportSeriesWorker(BaseImportWorker):
 
 
 class SyncStatusWorker(QObject):
-    finished = pyqtSignal(str, str)
+
+    finished = pyqtSignal(dict, str)
+
     error = pyqtSignal(str)
 
     def __init__(self, work_id: int, url: str, username: str) -> None:
@@ -301,10 +320,10 @@ class SyncStatusWorker(QObject):
             has_commented = ao3_client.check_comment(self.work_id, self.username)
             time.sleep(const.SYNC_REQUEST_DELAY)
             has_kudosed = ao3_client.check_kudos(self.work_id, self.username)
-            new_status = (
-                const.STATUS_COMMENTED if has_commented else const.STATUS_KUDOSED if has_kudosed else const.STATUS_READ
-            )
-            self.finished.emit(new_status, self.url)
+
+            sync_results = {"commented": has_commented, "kudosed": has_kudosed}
+            self.finished.emit(sync_results, self.url)
+
         except Exception as e:
             logger.exception(f"Critical error during status sync for work ID {self.work_id}")
             self.error.emit(str(e))
@@ -521,7 +540,7 @@ class DiscoverFicsWorker(QObject):
             logger.info(f"AO3 search returned {len(search_query.results)} initial results.")
 
             existing_urls = get_existing_urls()
-            candidates = []
+            candidates: List[Tuple[str, AO3.Work]] = []
             for result in search_query.results:
                 if len(candidates) >= 5:
                     break

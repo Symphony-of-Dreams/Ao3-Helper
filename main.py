@@ -76,7 +76,6 @@ from database import (
     get_or_create_tag,
     get_tags_for_fic,
     get_unread_notifications,
-    initialize_database,
     remove_fics_from_queue,
     remove_tag_from_fic,
     run_database_migrations,
@@ -590,7 +589,7 @@ class MainWindow(QMainWindow):
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.addItems(
             [
-                "Status: All",  # Indice 0
+                "Status: All",
                 const.STATUS_TO_READ,
                 const.STATUS_READ,
                 const.STATUS_KUDOSED,
@@ -906,11 +905,15 @@ class MainWindow(QMainWindow):
 
         if len(fics_in_queue) < fic_count:
             add_to_queue_action = menu.addAction(f"🔖 Add {fic_count} Fic(s) to Reading Queue")
-            add_to_queue_action.triggered.connect(self._add_selected_to_queue)
+
+            if add_to_queue_action:
+                add_to_queue_action.triggered.connect(self._add_selected_to_queue)
 
         if len(fics_in_queue) > 0:
             remove_from_queue_action = menu.addAction(f"✖️ Remove {len(fics_in_queue)} Fic(s) from Reading Queue")
-            remove_from_queue_action.triggered.connect(self._remove_selected_from_queue)
+
+            if remove_from_queue_action:
+                remove_from_queue_action.triggered.connect(self._remove_selected_from_queue)
 
         menu.addSeparator()
 
@@ -1361,7 +1364,7 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(self, "Backup Database", backup_filename, "Database Files (*.db)")
         if file_path:
             try:
-                shutil.copyfile("ao3_helper.db", file_path)
+                shutil.copyfile(const.DB_PATH, file_path)
                 logger.info(f"Database successfully backed up to {file_path}")
                 QMessageBox.information(self, "Backup Successful", f"Database backed up to:\n{file_path}")
             except Exception as e:
@@ -1405,7 +1408,7 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Restore Database", "", "Database Files (*.db)")
         if file_path:
             try:
-                shutil.copyfile(file_path, "ao3_helper.db")
+                shutil.copyfile(file_path, const.DB_PATH)
                 logger.warning(f"Database successfully restored from {file_path}. Application will restart.")
                 QMessageBox.information(
                     self, "Restore Successful", "Database restored. The application will now restart."
@@ -1475,7 +1478,7 @@ class MainWindow(QMainWindow):
         self.import_worker.moveToThread(self.import_thread)
         self.import_thread.started.connect(self.import_worker.run)
         self.import_worker.progress.connect(self._update_progress_bar)
-        self.import_worker.new_fic_added.connect(self._update_fics_table)
+        self.import_worker.new_fic_added.connect(self._on_new_fic_from_worker)
 
         self.import_worker.error.connect(self._on_import_error)
 
@@ -1523,7 +1526,7 @@ class MainWindow(QMainWindow):
 
         self.bookmarks_import_thread.started.connect(self.bookmarks_import_worker.run)
         self.bookmarks_import_worker.progress.connect(self._update_progress_bar)
-        self.bookmarks_import_worker.new_fic_added.connect(self._update_fics_table)
+        self.bookmarks_import_worker.new_fic_added.connect(self._on_new_fic_from_worker)
         self.bookmarks_import_worker.error.connect(self._on_import_error)
         self.bookmarks_import_worker.finished.connect(self._on_bookmarks_import_finished)
 
@@ -1567,7 +1570,7 @@ class MainWindow(QMainWindow):
 
         self.history_import_thread.started.connect(self.history_import_worker.run)
         self.history_import_worker.progress.connect(self._update_progress_bar)
-        self.history_import_worker.new_fic_added.connect(self._update_fics_table)
+        self.history_import_worker.new_fic_added.connect(self._on_new_fic_from_worker)
         self.history_import_worker.error.connect(self._on_import_error)
         self.history_import_worker.finished.connect(self._on_history_import_finished)
 
@@ -1620,23 +1623,66 @@ class MainWindow(QMainWindow):
         self.sync_thread.finished.connect(lambda: setattr(self, "sync_thread", None))
         self.sync_thread.start()
 
-    def _on_status_sync_finished(self, new_status: str, url: str) -> None:
+    def _on_status_sync_finished(self, sync_results: Dict[str, bool], url: str) -> None:
+        """
+        Gestisce il completamento di una sincronizzazione e aggiorna l'interfaccia
+        applicando la logica di business corretta basata sui fatti ricevuti.
+        """
+        fic_data = self.fics_in_memory.get(url)
+        if not fic_data:
+            logger.warning(f"Sync finished for a fic not in memory: {url}")
+            return
+
+        current_status = fic_data["status"]
+        new_status = current_status
+
+        if sync_results.get("commented"):
+            new_status = const.STATUS_COMMENTED
+        elif sync_results.get("kudosed"):
+            new_status = const.STATUS_KUDOSED
+        elif fic_data.get("is_in_history"):
+
+            if current_status != const.STATUS_COMMENTED and current_status != const.STATUS_KUDOSED:
+                new_status = const.STATUS_READ
+
         status_bar = self.statusBar()
         if status_bar:
-            status_bar.showMessage(f"Sync complete. New status: {new_status}", 3000)
-        if not self.manual_override_enabled:
+            message = f"Sync complete for '{fic_data.get('title', 'fic')}'. "
+            if new_status != current_status:
+                message += f"New status: {new_status}"
+            else:
+                message += "Status is up to date."
+            status_bar.showMessage(message, 4000)
+
+        if hasattr(self, "sync_status_button") and not self.manual_override_enabled:
             self.sync_status_button.setEnabled(True)
             self.sync_status_button.setText("🔄 Sync Status")
-        fresh_fic_data = get_fic_by_url(url)
-        if fresh_fic_data:
+
+        if new_status != current_status:
             update_fic_status(url, new_status, 1)
-            self.fics_in_memory[url] = fresh_fic_data
+            old_fic_data = dict(fic_data)
+
+            self.fics_in_memory[url]["status"] = new_status
+            self.fics_in_memory[url]["status_verified"] = True
+            self.analysis_engine.update_fic(old_fic_data, self.fics_in_memory[url])
+
             row_to_update = self._find_row_by_url(url)
             if row_to_update is not None:
-                self._populate_table_row(row_to_update, fresh_fic_data)
-            stats, chart_data = calculate_base_stats(), get_data_for_charts("lette")
-            if check_for_achievements(stats, chart_data, newly_modified_fic=dict(fresh_fic_data)):
+                self._populate_table_row(row_to_update, self.fics_in_memory[url])
+
+            if check_for_achievements(
+                calculate_base_stats(),
+                get_data_for_charts("lette"),
+                count_verified_statuses(),
+                newly_modified_fic=self.fics_in_memory[url],
+            ):
                 self.update_notification_indicator()
+        else:
+
+            self.fics_in_memory[url]["status_verified"] = True
+            row_to_update = self._find_row_by_url(url)
+            if row_to_update is not None:
+                self._populate_table_row(row_to_update, self.fics_in_memory[url])
 
     def _on_status_sync_error(self, error_message: str) -> None:
         status_bar = self.statusBar()
@@ -1735,11 +1781,6 @@ class MainWindow(QMainWindow):
         self.fic_count_label.setText(f"Total Fics: {stats.get('total_fics', 0)}")
         self.word_count_label.setText(f"Words Read: {stats.get('total_words_read', 0):,}")
 
-    def _perform_search(self, search_text: str, search_field: str) -> None:
-
-        fics_to_display = get_filtered_fics(search_text, search_field)
-        self._update_fics_table(fics_to_display)
-
     @pyqtSlot()
     def _on_search_triggered(self) -> None:
         """
@@ -1829,7 +1870,7 @@ class MainWindow(QMainWindow):
         """
         Handler for clicking a search link in the details panel.
         """
-        print(f"DEBUG: _execute_search_from_link received: '{link}'")
+        logger.debug(f"DEBUG: _execute_search_from_link received: '{link}'")
         try:
             field, value = link.split(":", 1)
         except ValueError:
@@ -1844,12 +1885,12 @@ class MainWindow(QMainWindow):
             "relationships": 7,
             "characters": 8,
             const.SEARCH_USER_TAGS: 9,
-            const.SEARCH_SERIES: 10,
+            "series_name": 10,
         }
-        if idx := combo_map.get(field):
+
+        if (idx := combo_map.get(field)) is not None:
             self.search_combo.setCurrentIndex(idx)
             self.search_input.setText(value)
-            self._run_search(value, field)
 
     def format_link(self, text: Optional[str], link_type: str) -> str:
         """Helper method to format a comma-separated string into clickable HTML links."""
@@ -1981,7 +2022,10 @@ class MainWindow(QMainWindow):
         fresh_fic_data = get_fic_by_url(self.selected_url)
         if fresh_fic_data:
             if check_for_achievements(
-                calculate_base_stats(), get_data_for_charts("lette"), newly_modified_fic=dict(fresh_fic_data)
+                calculate_base_stats(),
+                get_data_for_charts("lette"),
+                count_verified_statuses(),
+                newly_modified_fic=dict(fresh_fic_data),  # noqa: E501
             ):
                 self.update_notification_indicator()
 
@@ -1997,31 +2041,54 @@ class MainWindow(QMainWindow):
 
     def _start_auto_sync_for_fic(self, fic_data: Dict[str, Any]):
         """
-        Automatically starts a status sync for a newly added fic, if logged in.
+        NOVITÀ: Avvia automaticamente una sincronizzazione dello stato in background
+        per una nuova opera, se l'utente è loggato.
         """
         username = config_manager.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME)
         if not username or username == const.CONFIG_DEFAULT_USER:
+            logger.info("Utente non loggato, auto-sync saltato.")
             return
 
+        logger.info(f"Avvio auto-sync per la nuova opera: {fic_data['title']}")
         work_id = int(fic_data["url"].split("/")[-1])
+
+        if not hasattr(self, "active_sync_threads_and_workers"):
+            self.active_sync_threads_and_workers = []
 
         thread = QThread()
         worker = SyncStatusWorker(work_id, fic_data["url"], username)
         worker.moveToThread(thread)
 
-        worker.finished.connect(lambda status, url: self._on_auto_sync_finished(url))
+        worker.finished.connect(self._on_status_sync_finished)
         worker.error.connect(thread.quit)
 
-        worker.finished.connect(thread.quit)
+        def on_sync_done():
+            for t, w in self.active_sync_threads_and_workers:
+                if t is thread:
+                    self.active_sync_threads_and_workers.remove((t, w))
+                    break
+            thread.quit()
+
+        worker.finished.connect(on_sync_done)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
 
-        if not hasattr(self, "active_sync_threads"):
-            self.active_sync_threads = []
-        self.active_sync_threads.append(thread)
-        thread.finished.connect(lambda: self.active_sync_threads.remove(thread))
+        self.active_sync_threads_and_workers.append((thread, worker))
 
+        thread.started.connect(worker.run)
         thread.start()
+
+    @pyqtSlot(dict)
+    def _update_single_fic_row(self, fic_data: Dict[str, Any]) -> None:
+
+        url = fic_data["url"]
+        logger.debug(f"Aggiornamento in tempo reale per la riga con URL: {url}")
+
+        row = self._find_row_by_url(url)
+        if row is not None:
+
+            self.fics_in_memory[url] = fic_data
+            self._populate_table_row(row, fic_data)
 
     def _on_auto_sync_finished(self, url: str):
         """
@@ -2055,7 +2122,10 @@ class MainWindow(QMainWindow):
                 self._populate_table_row(row_to_update, fresh_fic_data)
 
             if check_for_achievements(
-                calculate_base_stats(), get_data_for_charts("lette"), newly_modified_fic=old_fic_data
+                calculate_base_stats(),
+                get_data_for_charts("lette"),
+                count_verified_statuses(),
+                newly_modified_fic=old_fic_data,  # noqa: E501
             ):
                 self.update_notification_indicator()
             if new_status == const.STATUS_READ:
@@ -2150,26 +2220,31 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_add_fic_finished(self, data: Optional[Dict[str, Any]]):
+        if data is None:
+            logger.debug("AddFicWorker finished without data, likely handled by private_fic_detected.")
+            self._resume_all_long_workers()
+            return
+
         status_bar = self.statusBar()
-        if data:
-            if add_fic(data):
-                logger.info(f"Successfully added '{data['title']}' to the database via worker.")
-                QMessageBox.information(self, "Success", f"'{data['title']}' has been added!")
-                self.url_input.clear()
-                self.search_input.clear()
-                self.status_filter_combo.setCurrentIndex(0)
-                new_fic_data = get_fic_by_url(data["url"])
-                if new_fic_data:
-                    self.analysis_engine.add_fic(new_fic_data)
-                    self._start_auto_sync_for_fic(new_fic_data)  # Start auto-sync
-                self._update_fics_table()
-                self._update_search_completer()
-            else:
-                logger.warning(f"Worker tried to add a fic that is already in the database: {data['url']}")
-                QMessageBox.warning(self, "Attention", "This fic is already in your archive.")
+
+        if add_fic(data):
+            logger.info(f"Successfully added '{data['title']}' to the database via worker.")
+            QMessageBox.information(self, "Success", f"'{data['title']}' has been added!")
+            self.url_input.clear()
+            self.search_input.clear()
+            self.status_filter_combo.setCurrentIndex(0)
+
+            new_fic_data = get_fic_by_url(data["url"])
+            if new_fic_data:
+                self.analysis_engine.add_fic(new_fic_data)
+                self._start_auto_sync_for_fic(new_fic_data)
+
+            self._update_fics_table()
+            self._update_search_completer()
         else:
-            logger.error("Worker failed to retrieve data from URL.")
-            QMessageBox.critical(self, "Error", "Could not retrieve data from the URL.")
+            logger.warning(f"Worker tried to add a fic that is already in the database: {data['url']}")
+            QMessageBox.warning(self, "Attention", "This fic is already in your archive.")
+
         if status_bar:
             status_bar.clearMessage()
         self._resume_all_long_workers()
@@ -2177,6 +2252,17 @@ class MainWindow(QMainWindow):
         if self.history_import_thread and self.history_import_thread.isRunning():
             if self.history_import_worker:
                 self.history_import_worker.resume()
+
+    @pyqtSlot(dict)
+    def _on_new_fic_from_worker(self, fic_data: Dict[str, Any]) -> None:
+        """
+        Gestore unificato per ogni nuova opera aggiunta da un worker di importazione di massa.
+        Aggiorna la UI, il motore di analisi e avvia l'auto-sync.
+        """
+        self._update_fics_table()
+
+        self.analysis_engine.add_fic(fic_data)
+        self._start_auto_sync_for_fic(fic_data)
 
     def _on_add_fic_error(self, error_message: str):
         logger.error(f"An error occurred in the AddFicWorker: {error_message}")
@@ -2241,7 +2327,7 @@ class MainWindow(QMainWindow):
         self.series_import_worker.moveToThread(self.series_import_thread)
         self.series_import_thread.started.connect(self.series_import_worker.run)
         self.series_import_worker.progress.connect(self._update_progress_bar)
-        self.series_import_worker.new_fic_added.connect(self._update_fics_table)
+        self.series_import_worker.new_fic_added.connect(self._on_new_fic_from_worker)
         self.series_import_worker.error.connect(self._on_import_error)
         self.series_import_worker.finished.connect(self._on_mass_import_finished)
         self.series_import_worker.finished.connect(self.series_import_thread.quit)
@@ -2439,12 +2525,10 @@ class MainWindow(QMainWindow):
         self._update_welcome_message()
 
     def _open_dashboard_window(self) -> None:
-        """Opens the Dashboard window, passing the analysis engine instance."""
+
         dialog = DashboardWindow(self.analysis_engine, self)
 
-        dialog.load_data_and_build_ui()
-
-        dialog.exec()
+        dialog.populate_data_and_show()
 
     def _update_ui_for_logout(self) -> None:
         """Updates UI elements to reflect the logged-out state."""
@@ -2477,7 +2561,7 @@ class MainWindow(QMainWindow):
         self.collection_import_worker.moveToThread(self.collection_import_thread)
         self.collection_import_thread.started.connect(self.collection_import_worker.run)
         self.collection_import_worker.progress.connect(self._update_progress_bar)
-        self.collection_import_worker.new_fic_added.connect(self._update_fics_table)  # noqa: E501
+        self.collection_import_worker.new_fic_added.connect(self._on_new_fic_from_worker)  # noqa: E501
         self.collection_import_worker.error.connect(self._on_import_error)
         self.collection_import_worker.finished.connect(self._on_mass_import_finished)
         self.collection_import_worker.finished.connect(self.collection_import_thread.quit)
@@ -2485,16 +2569,6 @@ class MainWindow(QMainWindow):
         self.collection_import_thread.finished.connect(self.collection_import_thread.deleteLater)
         self.collection_import_thread.finished.connect(lambda: setattr(self, "collection_import_thread", None))
         self.collection_import_thread.start()
-
-    @pyqtSlot(sqlite3.Row)
-    def _update_single_fic_row(self, fic_data: Dict[str, Any]) -> None:
-        """Aggiorna una singola riga nella tabella senza ricaricare tutto."""
-        url = fic_data["url"]
-
-        row = self._find_row_by_url(url)
-        if row is not None:
-            self.fics_in_memory[url] = fic_data
-            self._populate_table_row(row, fic_data)
 
     @pyqtSlot(dict, bool)
     def _apply_advanced_filter(self, filters: Dict[str, Any], should_save: bool) -> None:
@@ -2575,7 +2649,7 @@ class MainWindow(QMainWindow):
         self.total_sync_thread.start()
         self.sync_dialog.show()
 
-    def _start_single_fic_add(self, url: str) -> None:
+    def _start_single_fic_add(self, url: str, use_auth: bool = False) -> None:
         """Avvia il worker per aggiungere una singola fic."""
         if self.add_fic_thread and self.add_fic_thread.isRunning():
             QMessageBox.warning(self, "In Progress", "A fic is already being added. Please wait.")
@@ -2585,27 +2659,57 @@ class MainWindow(QMainWindow):
             if self.history_import_worker:
                 self.history_import_worker.pause()
 
-        logger.info(f"Starting worker to add fic from URL: {url}")
+        logger.info(f"Starting worker to add fic from URL: {url} (Authenticated Fallback: {use_auth})")
 
         status_bar = self.statusBar()
         if status_bar:
             status_bar.showMessage("Retrieving data from AO3...")
 
         self.add_fic_thread = QThread()
-        self.worker = AddFicWorker(url)
+
+        self.worker = AddFicWorker(url, use_auth_fallback=use_auth)
         self.worker.moveToThread(self.add_fic_thread)
         self.add_fic_thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._on_add_fic_finished)
         self.worker.error.connect(self._on_add_fic_error)
+
+        self.worker.private_fic_detected.connect(self._handle_private_fic)
+
         self.worker.finished.connect(self.add_fic_thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.add_fic_thread.finished.connect(lambda: setattr(self, "add_fic_thread", None))
         self.add_fic_thread.start()
 
+    @pyqtSlot(str)
+    def _handle_private_fic(self, url: str) -> None:
+        """
+        Slot che gestisce il caso in cui un'opera sia privata.
+        Chiede all'utente il permesso di riprovare con l'account loggato.
+        Il worker precedente si è già auto-terminato.
+        """
+        self.statusBar().clearMessage()
+
+        reply = QMessageBox.question(
+            self,
+            "Private Work Detected",
+            "This work could not be accessed as a guest. It might be private or require an AO3 account to view.\n\n"
+            "Do you want to try again using your logged-in account?\n\n"
+            "<b>Note:</b> This will register as a 'visit' in your AO3 History.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            logger.info(f"User approved authenticated fetch for {url}. Restarting worker.")
+
+            self._start_single_fic_add(url, use_auth=True)
+        else:
+            logger.info(f"User declined authenticated fetch for {url}.")
+            self._resume_all_long_workers()
+
     def _on_total_sync_finished(self) -> None:
         logger.info("Total sync process has concluded.")
         self.total_sync_thread = None
-        self._update_fics_table()
 
     def _is_long_worker_running(self) -> bool:
         """Controlla se uno qualsiasi dei worker a lunga esecuzione è attivo."""
@@ -2903,7 +3007,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     logger.info("========================================")
     logger.info("Application starting...")
-    initialize_database()
+
     try:
         run_database_migrations()
 

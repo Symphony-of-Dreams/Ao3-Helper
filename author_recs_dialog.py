@@ -1,4 +1,3 @@
-# author_recs_dialog.py
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -41,7 +40,7 @@ class AuthorRecsDialog(QDialog):
         if not results:
             self.results_list.addItem("No new fics found in your favorite authors' bookmarks.")
 
-        grouped_results = {}
+        grouped_results: Dict[str, List[Dict[str, Any]]] = {}
         for fic in results:
             author = fic.get("recommended_by", "Unknown")
             if author not in grouped_results:

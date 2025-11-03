@@ -2,6 +2,8 @@ import logging
 import sys
 from logging import Logger
 
+import constants as const
+
 
 def setup_logging() -> Logger:
     """
@@ -20,7 +22,7 @@ def setup_logging() -> Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler("ao3_helper.log", mode="w", encoding="utf-8")
+    file_handler = logging.FileHandler(const.LOG_PATH, mode="w", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

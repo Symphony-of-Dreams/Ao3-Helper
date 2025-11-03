@@ -1,5 +1,7 @@
+import os
+
 APP_VERSION = "1.9.0"
-DB_NAME = "ao3_helper.db"
+APP_NAME = "AO3_Helper"
 
 LATEST_DB_VERSION = 6
 
@@ -116,3 +118,22 @@ CLR_STATUS_KUDOSED_DEFAULT = "#FB8C00"
 CLR_STATUS_COMMENTED_DEFAULT = "#43A047"
 CLR_STATUS_NEUTRAL_DEFAULT = "#AAAAAA"
 CLR_STATUS_DROPPED_DEFAULT = "#606060"
+
+if "APPDATA" in os.environ:
+
+    ROAMING_DIR = os.path.join(os.environ["APPDATA"], APP_NAME)
+
+    LOCAL_DIR = os.path.join(os.environ["LOCALAPPDATA"], APP_NAME)
+else:
+
+    ROAMING_DIR = os.path.abspath(".")
+    LOCAL_DIR = os.path.abspath(".")
+
+
+os.makedirs(ROAMING_DIR, exist_ok=True)
+os.makedirs(LOCAL_DIR, exist_ok=True)
+
+
+DB_PATH = os.path.join(LOCAL_DIR, "ao3_helper.db")
+CONFIG_PATH = os.path.join(ROAMING_DIR, "config.ini")
+LOG_PATH = os.path.join(LOCAL_DIR, "ao3_helper.log")

@@ -3,7 +3,7 @@
 [Setup]
 AppName=AO3 Helper
 AppId={{b74309af-b1ac-4cd3-9733-93975923a6d8}}
-AppVersion=1.9.0
+AppVersion=1.9.5
 AppPublisher=Symphony_of_Dreams
 DefaultDirName={autopf}\AO3 Helper
 DefaultGroupName=AO3 Helper
@@ -11,7 +11,7 @@ UninstallDisplayIcon={app}\AO3 Helper.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-OutputBaseFilename=setup_ao3_helper_v1.9.0
+OutputBaseFilename=setup_ao3_helper_v1.9.5
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

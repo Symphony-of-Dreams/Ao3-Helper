@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "ao3_helper"
 version = "1.9.5" 
 description = "A desktop application to manage your AO3 fanfiction archive."
-requires-python = ">=3.11
+requires-python = ">=3.11"
 license = {text = "MIT"}
 
 

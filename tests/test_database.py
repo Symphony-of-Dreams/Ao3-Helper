@@ -1,5 +1,5 @@
-import constants as const
-from database import (
+from ao3_helper import constants as const
+from ao3_helper.core.database import (
     add_fic,
     calculate_base_stats,
     delete_fic,
@@ -7,7 +7,7 @@ from database import (
     get_filtered_fics,
     update_fic_status,
 )
-from models import Fic
+from ao3_helper.core.models import Fic
 
 BASE_FIC_DATA = {
     "url": "https://archiveofourown.org/works/12345",

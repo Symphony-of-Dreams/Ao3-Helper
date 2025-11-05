@@ -1,5 +1,4 @@
-
-from database import (
+from ao3_helper.core.database import (
     add_fic,
     assign_tag_to_fic,
     create_user_tag,

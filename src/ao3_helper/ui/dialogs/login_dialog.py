@@ -78,16 +78,14 @@ class LoginDialog(QDialog):
         new_username = self.user_input.text().strip()
         new_password = self.pass_input.text()
 
-        # Salva le impostazioni non relative all'utente (possono essere cambiate senza riavvio)
         config_manager.set(
             const.CONFIG_SECTION_SETTINGS,
             const.CONFIG_KEY_MANUAL_OVERRIDE,
             "true" if self.override_checkbox.isChecked() else "false",
         )
-        # Applichiamo subito questa modifica per non perderla
+
         config_manager.save_config()
 
-        # Controlla se l'utente è cambiato
         if new_username != old_username:
             reply = QMessageBox.question(
                 self,
@@ -100,32 +98,29 @@ class LoginDialog(QDialog):
             )
 
             if reply == QMessageBox.StandardButton.Yes:
-                # Salva le nuove credenziali
+
                 config_manager.set(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME, new_username)
                 config_manager.save_config()
 
                 if new_password:
                     security_manager.set_password(new_username, new_password)
-                else:  # Se la password è vuota, assicurati di cancellare quella vecchia
+                else:
                     security_manager.delete_password(new_username)
 
-                # Riavvia l'applicazione
                 from PyQt6.QtWidgets import QApplication
 
                 QApplication.quit()
                 QProcess.startDetached(sys.executable, sys.argv or [])
             else:
-                # L'utente ha annullato, non fare nulla
+
                 return
         else:
-            # L'utente non è cambiato, possiamo procedere senza riavvio
-            # Salva la password (potrebbe essere cambiata)
+
             if new_password:
                 security_manager.set_password(new_username, new_password)
             else:
                 security_manager.delete_password(new_username)
 
-            # Ricarica la sessione AO3 per applicare eventuali cambi di password
             from ao3_helper.core.ao3_manager import ao3_client
 
             login_successful = ao3_client.reload_session()
@@ -150,5 +145,4 @@ class LoginDialog(QDialog):
                     "You are currently browsing as a guest.",
                 )
 
-            # Chiudi la finestra di dialogo
             self.accept()

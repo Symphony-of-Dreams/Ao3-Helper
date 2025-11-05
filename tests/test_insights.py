@@ -1,5 +1,5 @@
-from database import get_activity_by_month, get_reread_statistics
-from models import Fic, db as peewee_db
+from ao3_helper.core.database import get_activity_by_month, get_reread_statistics
+from ao3_helper.core.models import Fic, db as peewee_db
 
 
 def populate_test_data():

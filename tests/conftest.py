@@ -1,6 +1,6 @@
 import pytest
 
-from models import Achievement, Fic, FicTag, Notification, UserTag, db as peewee_db
+from ao3_helper.core.models import Achievement, Fic, FicTag, Notification, UserTag, db as peewee_db
 
 MODELS = [Fic, UserTag, FicTag, Notification, Achievement]
 

@@ -30,7 +30,6 @@ from .workers import (
 class WorkerManager(QObject):
     """Manages all background worker threads for the application."""
 
-    # Signals to communicate with MainWindow
     analysis_ready = pyqtSignal()
     update_check_finished = pyqtSignal()
     mass_import_finished = pyqtSignal()
@@ -56,7 +55,6 @@ class WorkerManager(QObject):
         self.parent = parent
         self.analysis_engine = analysis_engine
 
-        # Thread and worker attributes
         self.add_fic_thread: Optional[QThread] = None
         self.worker: Optional[AddFicWorker] = None
         self.update_thread: Optional[QThread] = None
@@ -263,7 +261,7 @@ class WorkerManager(QObject):
                 self.history_import_worker.pause()
 
         self.add_fic_thread = QThread()
-        # MODIFICA: Ora la chiamata è valida perché il costruttore del worker la accetta
+
         self.worker = AddFicWorker(url, use_auth_fallback=use_auth)
         self.worker.moveToThread(self.add_fic_thread)
 

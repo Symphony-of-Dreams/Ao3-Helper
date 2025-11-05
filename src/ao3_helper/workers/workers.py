@@ -102,7 +102,6 @@ class BaseImportWorker(QObject):
                             logger.info(f"Promoting existing fic to library during mass import: {fic_url}")
                             set_fic_in_library(fic_url)
 
-                            # MODIFICA CHIAVE: Emettiamo il nuovo segnale con i dati dell'opera
                             self.fic_promoted.emit(existing_fic)
                         else:
                             logger.debug(f"Skipping existing and already-in-library fic: {fic_url}")
@@ -120,7 +119,7 @@ class BaseImportWorker(QObject):
 class AddFicWorker(QObject):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
-    private_fic_detected = pyqtSignal(str)  # Segnale già esistente
+    private_fic_detected = pyqtSignal(str)
 
     def __init__(self, url: str, use_auth_fallback: bool = False):
         super().__init__()
@@ -136,15 +135,13 @@ class AddFicWorker(QObject):
             if data:
                 self.finished.emit(data)
             else:
-                # Se i dati non vengono trovati E non stavamo già usando l'autenticazione,
-                # allora è un'opera potenzialmente privata.
+
                 if not self.use_auth_fallback:
                     self.private_fic_detected.emit(self.url)
-                    # Emettiamo finished(None) per dire alla MainWindow che questo specifico
-                    # tentativo è concluso, ma non è un errore.
+
                     self.finished.emit(None)
                 else:
-                    # Se anche con l'autenticazione non troviamo nulla, è un errore.
+
                     self.error.emit("Could not retrieve data. The work might be deleted or the URL is incorrect.")
         except Exception as e:
             logger.exception(f"Exception in AddFicWorker for URL {self.url}")
@@ -280,14 +277,14 @@ class ImportHistoryWorker(QObject):
                     if data:
                         data["last_visit_date"] = item.get("last_visit_date")
                         data["visit_count"] = item.get("visit_count")
-                        data["from_history"] = True  # Aggiungiamo il flag
+                        data["from_history"] = True
                         created, fic_instance = add_or_update_fic_from_history(data)
                         if created and fic_instance:
-                            # Convertiamo il modello Peewee in un dizionario
+
                             fic_data_dict_new = model_to_dict(fic_instance)
-                            # Assicuriamoci che il flag sia presente anche qui
+
                             fic_data_dict_new["from_history"] = True
-                            # DEBUG: Controlliamo cosa stiamo per emettere
+
                             logger.debug(f"HistoryWorker emitting new fic: {fic_data_dict_new}")
                             self.new_fic_added.emit(fic_data_dict_new)
 
@@ -409,12 +406,10 @@ class TotalSyncWorker(QObject):
             try:
                 work_id = int(fic["url"].split("/")[-1])
 
-                # Introduce a random delay to humanize the requests
                 time.sleep(random.uniform(const.HUMAN_SYNC_DELAY_MIN, const.HUMAN_SYNC_DELAY_MAX))
 
                 has_commented = ao3_client.check_comment(work_id, username)
 
-                # Introduce another random delay between checks for the same fic
                 time.sleep(random.uniform(const.HUMAN_SYNC_DELAY_MIN, const.HUMAN_SYNC_DELAY_MAX))
 
                 has_kudosed = ao3_client.check_kudos(work_id, username)

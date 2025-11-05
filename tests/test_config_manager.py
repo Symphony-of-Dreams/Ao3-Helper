@@ -3,9 +3,8 @@ from configparser import ConfigParser
 
 import pytest
 
-import config_manager
-import constants as const
-from config_manager import ConfigManager
+from ao3_helper import constants as const
+from ao3_helper.core.config_manager import ConfigManager, config_manager
 
 
 @pytest.fixture

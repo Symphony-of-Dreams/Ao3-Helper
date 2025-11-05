@@ -1,15 +1,15 @@
 import pytest
 from peewee import SqliteDatabase
 
-import constants as const
-from database import (
+from ao3_helper import constants as const
+from ao3_helper.core.database import (
     add_fic,
     get_unlocked_achievements,
     unlock_achievement,
     update_fic_status,
 )
-from gamification import check_for_achievements
-from models import Achievement, Fic, FicTag, Notification, UserTag
+from ao3_helper.core.models import Achievement, Fic, FicTag, Notification, UserTag
+from ao3_helper.workers.gamification import check_for_achievements
 
 MODELS = [Fic, Achievement, UserTag, FicTag, Notification]
 test_db = SqliteDatabase(":memory:")
@@ -47,9 +47,9 @@ def test_achievement_first_fic_read(db_connection):
 
     general_stats = {"total_words_read": 1000, "fics_read": 1, "fics_commented": 0}
     chart_data = {"top_fandoms": []}
-    verified_stats = {"kudos": 0, "comments": 0}  # FIX
+    verified_stats = {"kudos": 0, "comments": 0}
 
-    result = check_for_achievements(general_stats, chart_data, verified_stats)  # FIX
+    result = check_for_achievements(general_stats, chart_data, verified_stats)
     assert result is True
 
     unlocked = get_unlocked_achievements()
@@ -65,9 +65,9 @@ def test_word_count_achievements_are_unlocked(db_connection):
 
     general_stats = {"total_words_read": 120000, "fics_read": 0, "fics_commented": 0}
     chart_data = {"top_fandoms": []}
-    verified_stats = {"kudos": 0, "comments": 0}  # FIX
+    verified_stats = {"kudos": 0, "comments": 0}
 
-    check_for_achievements(general_stats, chart_data, verified_stats)  # FIX
+    check_for_achievements(general_stats, chart_data, verified_stats)
 
     unlocked = get_unlocked_achievements()
     assert const.ACH_WORD_COUNT_10K in unlocked
@@ -85,9 +85,9 @@ def test_no_achievements_if_already_unlocked(db_connection):
 
     general_stats = {"total_words_read": 1000, "fics_read": 1, "fics_commented": 0}
     chart_data = {"top_fandoms": []}
-    verified_stats = {"kudos": 0, "comments": 0}  # FIX
+    verified_stats = {"kudos": 0, "comments": 0}
 
-    result = check_for_achievements(general_stats, chart_data, verified_stats)  # FIX
+    result = check_for_achievements(general_stats, chart_data, verified_stats)
 
     assert result is False, "La funzione dovrebbe ritornare False se nessun *nuovo* achievement è stato sbloccato."
     assert len(get_unlocked_achievements()) == 1
@@ -99,12 +99,12 @@ def test_marathon_achievement_requires_completed_status(db_connection):
     """
     fic_to_read = {"word_count": 150000, "status": const.STATUS_TO_READ, "user_rating": 0}
     fic_read = {"word_count": 120000, "status": const.STATUS_READ, "user_rating": 0}
-    verified_stats = {"kudos": 0, "comments": 0}  # FIX
+    verified_stats = {"kudos": 0, "comments": 0}
 
-    result1 = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic_to_read)  # FIX
+    result1 = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic_to_read)
     assert result1 is False
 
-    result2 = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic_read)  # FIX
+    result2 = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic_read)
     assert result2 is True
     assert const.ACH_MARATHON in get_unlocked_achievements()
 
@@ -113,9 +113,9 @@ def test_verified_achievements(db_connection):
     """
     Verifica che gli achievement per kudos e commenti vengano sbloccati.
     """
-    verified_stats = {"kudos": 1, "comments": 10}  # FIX
+    verified_stats = {"kudos": 1, "comments": 10}
 
-    check_for_achievements({}, {}, verified_stats)  # FIX
+    check_for_achievements({}, {}, verified_stats)
 
     unlocked = get_unlocked_achievements()
     assert const.ACH_FIRST_KUDOS in unlocked
@@ -129,8 +129,8 @@ def test_five_star_achievement(db_connection):
     Verifica l'achievement per la valutazione a 5 stelle.
     """
     fic = {"user_rating": 5, "word_count": 100, "status": "Read"}
-    verified_stats = {"kudos": 0, "comments": 0}  # FIX
+    verified_stats = {"kudos": 0, "comments": 0}
 
-    result = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic)  # FIX
+    result = check_for_achievements({}, {}, verified_stats, newly_modified_fic=fic)
     assert result is True
     assert const.ACH_FIVE_STARS in get_unlocked_achievements()

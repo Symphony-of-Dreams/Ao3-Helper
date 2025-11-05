@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import constants as const
-import security_manager
-from ao3_manager import ao3_client
-from config_manager import config_manager
+from ao3_helper import constants as const
+from ao3_helper.core import security_manager
+from ao3_helper.core.ao3_manager import ao3_client
+from ao3_helper.core.config_manager import config_manager
 
 
 class LoginWorker(QObject):

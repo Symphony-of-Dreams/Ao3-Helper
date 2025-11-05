@@ -18,8 +18,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from fic_detail_popup import FicDetailPopup
-from ui_components import NumericTableWidgetItem
+from ao3_helper.ui.dialogs.fic_detail_popup import FicDetailPopup
+from ao3_helper.ui.ui_components import NumericTableWidgetItem
 
 
 class RecommendationCenterDialog(QDialog):

@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QDialog, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
-from database import get_unread_notifications, mark_notifications_as_read
+from ao3_helper.core.database import get_unread_notifications, mark_notifications_as_read
 
 
 class NotificationsWindow(QDialog):

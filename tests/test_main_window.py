@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from main import MainWindow
+from main_window import MainWindow
 
 
 def test_main_window_smoke_test(qtbot, db_connection):

@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from database import get_unlocked_achievements
-from gamification import ACHIEVEMENTS
+from ao3_helper.core.database import get_unlocked_achievements
+from ao3_helper.workers.gamification import ACHIEVEMENTS
 
 
 class AchievementsWindow(QDialog):

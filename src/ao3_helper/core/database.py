@@ -1,5 +1,6 @@
 import logging  # noqa: F401
 import operator
+import os
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -8,18 +9,30 @@ import peewee
 from peewee import JOIN, fn
 from playhouse.shortcuts import model_to_dict
 
-import constants as const
-from logger_setup import logger
-from models import Achievement, Fic, FicTag, Notification, SavedFilter, UserTag, db
+from ao3_helper import constants as const
+from ao3_helper.core.models import Achievement, Fic, FicTag, Notification, SavedFilter, UserTag, db
+from ao3_helper.logger_setup import logger
 
 
-def run_database_migrations() -> None:
+def get_db_path_for_user(username: str) -> str:
+    """
+    Costruisce e restituisce il percorso del database per un dato utente.
+    Crea la directory dei profili se non esiste.
+    """
+    if not username or username == const.CONFIG_DEFAULT_USER:
+        username = "guest"
+
+    os.makedirs(const.PROFILES_DIR, exist_ok=True)
+    return os.path.join(const.PROFILES_DIR, f"{username}.db")
+
+
+def run_database_migrations(db_path: str) -> None:
     """
     Ensures the database schema is up to date.
     - For new databases, creates the full, modern schema using the ORM.
     - For existing databases, applies manual migrations to add columns.
     """
-    from models import (
+    from ao3_helper.core.models import (
         Achievement,
         Fic,
         FicTag,
@@ -41,8 +54,8 @@ def run_database_migrations() -> None:
             db.execute_sql(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
             logger.info("New database schema created successfully.")
         else:
-
-            with sqlite3.connect(const.DB_PATH) as conn:
+            # MODIFICA CHIAVE: Usa il db_path fornito come argomento
+            with sqlite3.connect(db_path) as conn:
                 c = conn.cursor()
                 current_version = c.execute("PRAGMA user_version").fetchone()[0]
                 logger.info(f"DB version: Current is v{current_version}, Latest is v{const.LATEST_DB_VERSION}.")
@@ -50,6 +63,7 @@ def run_database_migrations() -> None:
                 if current_version < const.LATEST_DB_VERSION:
                     logger.warning(f"DB schema is outdated. Applying incremental migrations from v{current_version}...")
 
+                    # --- NESSUN'ALTRA MODIFICA DA QUI IN POI ---
                     if current_version < 3:
                         logger.info("Applying migration to v3: Adding data columns...")
                         try:
@@ -128,13 +142,16 @@ def run_database_migrations() -> None:
             db.close()
 
 
-def add_fic(fic_details: Dict[str, Any]) -> bool:
+def add_fic(fic_details: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Adds a new fic to the database using the Peewee ORM.
     Handles mapping from the input dictionary to the Fic model.
+
+    Returns:
+        A tuple (success, reason), e.g., (True, "created"), (False, "exists"), (False, "error")
     """
     try:
-
+        # ... (tutta la logica di creazione di fic_data_for_model rimane IDENTICA)
         fic_data_for_model = {
             "url": fic_details.get("url"),
             "title": fic_details.get("title"),
@@ -160,6 +177,7 @@ def add_fic(fic_details: Dict[str, Any]) -> bool:
             "kudos": fic_details.get("kudos"),
             "bookmarks": fic_details.get("bookmarks"),
             "comments": fic_details.get("comments"),
+            "is_in_library": True,
             "status": const.STATUS_TO_READ,
             "date_added": datetime.now(),
             "user_notes": "",
@@ -169,19 +187,17 @@ def add_fic(fic_details: Dict[str, Any]) -> bool:
 
         Fic.create(**fic_data_for_model)
         logger.info(f"Successfully added fic '{fic_data_for_model['title']}' using Peewee ORM.")
-        return True
+        return True, "created"
 
     except peewee.IntegrityError:
-
         logger.warning(f"Attempted to add a fic that already exists (ORM): {fic_details.get('url')}")
-        return False
+        return False, "exists"
     except Exception as e:
-
         logger.exception(f"Failed to add fic to database using ORM: {e}")
-        return False
+        return False, "error"
 
 
-def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, bool]:
+def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, Optional[Fic]]:
     """
     Adds a new fic from the history or updates an existing one with history data.
 
@@ -196,8 +212,7 @@ def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, b
     """
     fic_url = fic_details.get("url")
     if not fic_url:
-        logger.error("Attempted to process history fic with no URL.")
-        return (False, False)
+        return (False, None)
 
     try:
 
@@ -215,8 +230,8 @@ def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, b
 
             if rows_affected > 0:
                 logger.info(f"Updated existing fic '{existing_fic.title}' with history data.")
-                return (False, True)
-            return (False, False)
+                return (False, existing_fic)
+            return (False, None)
 
         else:
 
@@ -255,13 +270,13 @@ def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, b
                 "user_rating": 0,
                 "status_verified": False,
             }
-            Fic.create(**fic_data_for_model)
+            new_fic = Fic.create(**fic_data_for_model)
             logger.info(f"Created new fic '{fic_data_for_model['title']}' from history.")
-            return (True, False)
+            return (True, new_fic)
 
     except Exception as e:
         logger.exception(f"Failed to add or update fic from history for URL {fic_url}: {e}")
-        return (False, False)
+        return (False, None)
 
 
 def update_fic_status(url: str, new_status: str, verified: int = 0) -> None:
@@ -309,8 +324,9 @@ def get_unlocked_achievements() -> Dict[str, str]:
 
 def count_verified_statuses() -> Dict[str, int]:
     counts = {"kudos": 0, "comments": 0}
+    db_path = db.database
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
             c.execute(
                 "SELECT COUNT(*) FROM fics WHERE status = ? AND status_verified = 1",
@@ -609,8 +625,9 @@ def mark_notifications_as_read() -> None:
 
 
 def count_read_uncommented_fics() -> int:
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             return conn.execute("SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_READ,)).fetchone()[0]
     except sqlite3.Error as e:
         logger.exception(f"Failed to count read/uncommented fics: {e}")
@@ -642,8 +659,9 @@ def update_fic_data(url: str, data: Dict[str, Any]) -> None:
 
 
 def get_existing_urls() -> Set[str]:
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             return {r[0] for r in conn.execute("SELECT url FROM fics").fetchall()}
     except sqlite3.Error as e:
         logger.exception(f"Failed to get existing URLs: {e}")
@@ -693,8 +711,9 @@ def calculate_base_stats() -> Dict[str, int]:
 
 def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str, int]]]:
     data: Dict[str, Any] = {"top_fandoms": {}, "top_ratings": {}, "status_breakdown": {}, "top_categories": {}}
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             where_clause = (
@@ -740,8 +759,9 @@ def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str
 
 def get_frequencies_for_wordclouds(cloud_filter: str = "lette") -> Dict[str, Dict[str, int]]:
     freq: Dict[str, Dict[str, int]] = {"tags": {}, "relationships": {}, "characters": {}}
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             where_clause = (
@@ -808,8 +828,9 @@ def get_data_for_publication_year_chart(chart_filter: str = "lette") -> List[Tup
         ORDER BY year ASC
     """
 
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
             c.execute(query, params)
             return c.fetchall()
@@ -860,8 +881,9 @@ def bulk_update_status(urls: List[str], new_status: str) -> None:
     """Aggiorna lo stato per una lista di URL in una singola transazione."""
     if not urls:
         return
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
             placeholders = ",".join("?" for _ in urls)
             query = f"UPDATE fics SET status = ? WHERE url IN ({placeholders})"
@@ -876,8 +898,9 @@ def bulk_add_tags(urls: List[str], tags_to_add: List[str]) -> None:
     """Associa una lista di tag a una lista di fic."""
     if not urls or not tags_to_add:
         return
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
             tag_ids = [get_or_create_tag(tag_name) for tag_name in tags_to_add]
             valid_tag_ids = [tid for tid in tag_ids if tid is not None]
@@ -894,8 +917,9 @@ def bulk_remove_tags(urls: List[str], tags_to_remove: List[str]) -> None:
     """Rimuove l'associazione di una lista di tag da una lista di fic."""
     if not urls or not tags_to_remove:
         return
+    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
     try:
-        with sqlite3.connect(const.DB_PATH) as conn:
+        with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
             tag_placeholders = ",".join("?" for _ in tags_to_remove)
             c.execute(f"SELECT tag_id FROM user_tags WHERE name IN ({tag_placeholders})", tags_to_remove)

@@ -30,11 +30,11 @@ from PyQt6.QtWidgets import (
 )
 from wordcloud import WordCloud
 
-from analysis_engine import AnalysisEngine
-from database import get_activity_by_month, get_data_for_charts, get_reread_statistics
-from logger_setup import logger
-from ui_components import NumericTableWidgetItem
-from workers import ExportWorker
+from ao3_helper.core.analysis_engine import AnalysisEngine
+from ao3_helper.core.database import get_activity_by_month, get_data_for_charts, get_reread_statistics
+from ao3_helper.logger_setup import logger
+from ao3_helper.ui.ui_components import NumericTableWidgetItem
+from ao3_helper.workers.workers import ExportWorker
 
 
 class DashboardWindow(QDialog):

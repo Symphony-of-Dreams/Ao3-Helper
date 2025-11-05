@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
-from fic_detail_popup import FicDetailPopup
+from ao3_helper.ui.dialogs.fic_detail_popup import FicDetailPopup
 
 
 class AuthorRecsDialog(QDialog):

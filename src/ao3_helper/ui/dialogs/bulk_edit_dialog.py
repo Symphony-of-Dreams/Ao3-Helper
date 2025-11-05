@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import constants as const
+from ao3_helper import constants as const
 
 
 class BulkEditDialog(QDialog):

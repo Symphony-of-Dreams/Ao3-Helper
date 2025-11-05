@@ -16,6 +16,8 @@ COMPLETED_STATUSES = (STATUS_READ, STATUS_KUDOSED, STATUS_COMMENTED)
 DEFAULT_REQUEST_DELAY = 2
 SYNC_REQUEST_DELAY = 1
 FAST_SYNC_DELAY = 3
+HUMAN_SYNC_DELAY_MIN = 5
+HUMAN_SYNC_DELAY_MAX = 15
 RATE_LIMIT_DELAY = 60
 
 COLUMN_TITLE = "Title"
@@ -119,6 +121,26 @@ CLR_STATUS_COMMENTED_DEFAULT = "#43A047"
 CLR_STATUS_NEUTRAL_DEFAULT = "#AAAAAA"
 CLR_STATUS_DROPPED_DEFAULT = "#606060"
 
+PALETTE_LIGHT = {
+    "window_bg": "#f0f0f0",
+    "widget_bg": "white",
+    "text": "black",
+    "text_accent": "#555555",
+    "border": "#cccccc",
+    "highlight": "#3399ff",
+    "highlight_text": "white",
+}
+PALETTE_DARK = {
+    "window_bg": "#2b2b2b",
+    "widget_bg": "#3c3c3c",
+    "text": "#dddddd",
+    "text_accent": "#aaaaaa",
+    "border": "#555555",
+    "highlight": "#007acc",
+    "highlight_text": "white",
+}
+
+
 if "APPDATA" in os.environ:
 
     ROAMING_DIR = os.path.join(os.environ["APPDATA"], APP_NAME)
@@ -134,6 +156,6 @@ os.makedirs(ROAMING_DIR, exist_ok=True)
 os.makedirs(LOCAL_DIR, exist_ok=True)
 
 
-DB_PATH = os.path.join(LOCAL_DIR, "ao3_helper.db")
+PROFILES_DIR = os.path.join(LOCAL_DIR, "profiles")
 CONFIG_PATH = os.path.join(ROAMING_DIR, "config.ini")
 LOG_PATH = os.path.join(LOCAL_DIR, "ao3_helper.log")

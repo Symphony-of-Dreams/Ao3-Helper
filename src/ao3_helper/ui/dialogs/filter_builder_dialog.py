@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import constants as const
-from ui_components import TagCompleter
+from ao3_helper import constants as const
+from ao3_helper.ui.ui_components import TagCompleter
 
 
 class FilterBuilderDialog(QDialog):

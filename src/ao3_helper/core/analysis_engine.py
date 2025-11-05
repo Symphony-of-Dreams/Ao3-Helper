@@ -2,7 +2,7 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
-from database import get_filtered_fics
+from ao3_helper.core.database import get_filtered_fics
 
 
 class AnalysisEngine:
@@ -14,7 +14,7 @@ class AnalysisEngine:
     based on user ratings (stars).
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
 
         self.author_scores: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"tws": 0.0, "fic_count": 0})
         self.fandom_scores: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"tws": 0.0, "fic_count": 0})

@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from database import delete_user_tag, get_all_user_tags, rename_user_tag
+from ao3_helper.core.database import delete_user_tag, get_all_user_tags, rename_user_tag
 
 
 class TagManagementWindow(QDialog):

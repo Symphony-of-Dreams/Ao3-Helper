@@ -2,8 +2,8 @@ import configparser
 import os
 from typing import Any
 
-import constants as const
-from logger_setup import logger
+from ao3_helper import constants as const
+from ao3_helper.logger_setup import logger
 
 
 class ConfigManager:

@@ -9,13 +9,13 @@ from peewee import (
     ForeignKeyField,
     IntegerField,
     Model,
-    SqliteDatabase,
+    Proxy,
     TextField,
 )
 
-import constants as const
+from ao3_helper import constants as const
 
-db = SqliteDatabase(const.DB_PATH)
+db = Proxy()
 
 
 class BaseModel(Model):
@@ -53,7 +53,7 @@ class Fic(BaseModel):
     kudos = IntegerField(null=True)
     bookmarks = IntegerField(null=True)
     comments = IntegerField(null=True)
-    is_in_library = BooleanField(default=True)
+    is_in_library = BooleanField(default=False)
     is_in_history = BooleanField(default=False)
     last_visit_date = CharField(null=True)
     visit_count = IntegerField(null=True)

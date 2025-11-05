@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import AO3
 
-from logger_setup import logger
+from ao3_helper.logger_setup import logger
 
 
 def _normalize_fandom_name(name: str) -> str:

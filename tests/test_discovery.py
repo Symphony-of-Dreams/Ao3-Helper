@@ -1,8 +1,8 @@
 import pytest
 
-from analysis_engine import AnalysisEngine
-from query_builder import build_discovery_query
-from workers import AuthorRecsWorker
+from ao3_helper.core.analysis_engine import AnalysisEngine
+from ao3_helper.core.query_builder import build_discovery_query
+from ao3_helper.workers.workers import AuthorRecsWorker
 
 
 @pytest.fixture

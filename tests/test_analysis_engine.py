@@ -1,7 +1,7 @@
 import pytest
 
-from analysis_engine import AnalysisEngine
-from models import Fic
+from ao3_helper.core.analysis_engine import AnalysisEngine
+from ao3_helper.core.models import Fic
 
 TEST_FIC_DEFAULTS = {
     "title": "Test Title",

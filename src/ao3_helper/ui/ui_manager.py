@@ -127,7 +127,6 @@ class UIManager:
         self.main_window.clear_search_button.clicked.connect(lambda: self.main_window.filter_manager.clear_search())
         self.main_window.add_to_library_button.clicked.connect(self.main_window._add_to_library)
 
-        # Worker Manager Signals
         self.main_window.worker_manager.analysis_ready.connect(self.main_window._on_analysis_ready)
         self.main_window.worker_manager.update_check_finished.connect(self.main_window._on_update_check_finished)
         self.main_window.worker_manager.mass_import_finished.connect(self.main_window._on_mass_import_finished)
@@ -751,8 +750,6 @@ class UIManager:
         dialog.discover_fics_requested.connect(self.main_window.worker_manager.start_discovery_worker)
         dialog.import_fic_requested.connect(self.main_window.worker_manager.start_single_fic_add)
 
-        # MODIFICA: Connettiamo il segnale al metodo corretto sulla MainWindow.
-        # Nota che il metodo in MainWindow si chiama _handle_add_to_queue_request
         dialog.add_to_queue_requested.connect(self.main_window._handle_add_to_queue_request)
 
         dialog.exec()

@@ -54,7 +54,7 @@ def run_database_migrations(db_path: str) -> None:
             db.execute_sql(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
             logger.info("New database schema created successfully.")
         else:
-            # MODIFICA CHIAVE: Usa il db_path fornito come argomento
+
             with sqlite3.connect(db_path) as conn:
                 c = conn.cursor()
                 current_version = c.execute("PRAGMA user_version").fetchone()[0]
@@ -63,7 +63,6 @@ def run_database_migrations(db_path: str) -> None:
                 if current_version < const.LATEST_DB_VERSION:
                     logger.warning(f"DB schema is outdated. Applying incremental migrations from v{current_version}...")
 
-                    # --- NESSUN'ALTRA MODIFICA DA QUI IN POI ---
                     if current_version < 3:
                         logger.info("Applying migration to v3: Adding data columns...")
                         try:
@@ -151,7 +150,7 @@ def add_fic(fic_details: Dict[str, Any]) -> Tuple[bool, str]:
         A tuple (success, reason), e.g., (True, "created"), (False, "exists"), (False, "error")
     """
     try:
-        # ... (tutta la logica di creazione di fic_data_for_model rimane IDENTICA)
+
         fic_data_for_model = {
             "url": fic_details.get("url"),
             "title": fic_details.get("title"),
@@ -625,7 +624,7 @@ def mark_notifications_as_read() -> None:
 
 
 def count_read_uncommented_fics() -> int:
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             return conn.execute("SELECT COUNT(*) FROM fics WHERE status = ?", (const.STATUS_READ,)).fetchone()[0]
@@ -659,7 +658,7 @@ def update_fic_data(url: str, data: Dict[str, Any]) -> None:
 
 
 def get_existing_urls() -> Set[str]:
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             return {r[0] for r in conn.execute("SELECT url FROM fics").fetchall()}
@@ -711,7 +710,7 @@ def calculate_base_stats() -> Dict[str, int]:
 
 def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str, int]]]:
     data: Dict[str, Any] = {"top_fandoms": {}, "top_ratings": {}, "status_breakdown": {}, "top_categories": {}}
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -759,7 +758,7 @@ def get_data_for_charts(chart_filter: str = "lette") -> Dict[str, List[Tuple[str
 
 def get_frequencies_for_wordclouds(cloud_filter: str = "lette") -> Dict[str, Dict[str, int]]:
     freq: Dict[str, Dict[str, int]] = {"tags": {}, "relationships": {}, "characters": {}}
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -828,7 +827,7 @@ def get_data_for_publication_year_chart(chart_filter: str = "lette") -> List[Tup
         ORDER BY year ASC
     """
 
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
@@ -881,7 +880,7 @@ def bulk_update_status(urls: List[str], new_status: str) -> None:
     """Aggiorna lo stato per una lista di URL in una singola transazione."""
     if not urls:
         return
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
@@ -898,7 +897,7 @@ def bulk_add_tags(urls: List[str], tags_to_add: List[str]) -> None:
     """Associa una lista di tag a una lista di fic."""
     if not urls or not tags_to_add:
         return
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
@@ -917,7 +916,7 @@ def bulk_remove_tags(urls: List[str], tags_to_remove: List[str]) -> None:
     """Rimuove l'associazione di una lista di tag da una lista di fic."""
     if not urls or not tags_to_remove:
         return
-    db_path = db.database  # Ottiene il percorso del DB attualmente in uso
+    db_path = db.database
     try:
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()

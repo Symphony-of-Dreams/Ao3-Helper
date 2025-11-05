@@ -414,7 +414,6 @@ class MainWindow(QMainWindow):
 
                 logger.warning(f"User '{profile_name}' confirmed data deletion. Deleting database file: {db_path}")
 
-                # PASSO CRUCIALE: Chiudi la connessione al DB prima di eliminarlo
                 if not db.is_closed():
                     db.close()
 
@@ -428,8 +427,7 @@ class MainWindow(QMainWindow):
                     "All data for the current user has been deleted. The application will now restart.",  # noqa: E501
                 )
 
-                # Riavvia per creare un nuovo DB pulito per l'utente
-                self.close()  # Chiudi la finestra principale in modo pulito
+                self.close()
                 QProcess.startDetached(sys.executable, sys.argv or [])
 
             except Exception as e:
@@ -511,7 +509,6 @@ class MainWindow(QMainWindow):
         if not self.selected_url:
             return
 
-        # Recupera i dati attuali della fic dalla memoria
         fic_data = self.fics_in_memory.get(self.selected_url)
         if not fic_data:
             return
@@ -520,12 +517,8 @@ class MainWindow(QMainWindow):
 
         set_fic_in_library(self.selected_url)
 
-        # --- NUOVA LOGICA ---
-        # Avviamo lo sync dello stato in background.
-        # Questo è il momento giusto, come da requisito.
         logger.info(f"Fic '{fic_data.get('title')}' added to library. Triggering status sync.")
         self.worker_manager.start_auto_sync_for_fic(fic_data)
-        # ------------------
 
         self.add_to_library_button.setVisible(False)
 
@@ -533,7 +526,7 @@ class MainWindow(QMainWindow):
 
         row_to_update = self._find_row_by_url(self.selected_url)
         if row_to_update is not None:
-            # Usiamo i dati che avevamo già recuperato
+
             self._populate_table_row(row_to_update, fic_data)
 
         QMessageBox.information(
@@ -1287,10 +1280,9 @@ class MainWindow(QMainWindow):
 
         status_bar = self.statusBar()
 
-        # La funzione add_fic ora restituisce una tupla (successo, motivo)
         success, reason = add_fic(data)
 
-        if success:  # L'opera era nuova ed è stata creata
+        if success:
             logger.info(f"Successfully added '{data['title']}' to the database via worker.")
             QMessageBox.information(self, "Success", f"'{data['title']}' has been added!")
             self.url_input.clear()
@@ -1300,27 +1292,25 @@ class MainWindow(QMainWindow):
             new_fic_data = get_fic_by_url(data["url"])
             if new_fic_data:
                 self.analysis_engine.add_fic(new_fic_data)
-                # L'auto-sync parte solo per opere veramente nuove, non da history
+
                 if not new_fic_data.get("from_history"):
                     self.worker_manager.start_auto_sync_for_fic(new_fic_data)
 
             self._update_fics_table()
             self.ui_manager.update_search_completer()
 
-        elif reason == "exists":  # L'opera esisteva già
+        elif reason == "exists":
             logger.warning(f"Worker tried to add a fic that is already in the database: {data['url']}")
 
-            # --- NUOVA LOGICA INTELLIGENTE ---
             existing_fic = get_fic_by_url(data["url"])
             if existing_fic and not existing_fic.get("is_in_library"):
-                # L'opera esiste ma non è in libreria -> promuoviamola!
+
                 logger.info("Fic exists and is not in library. Promoting it.")
 
                 from ao3_helper.core.database import set_fic_in_library
 
                 set_fic_in_library(data["url"])
 
-                # Avviamo lo sync dello stato, come da requisito
                 self.worker_manager.start_auto_sync_for_fic(existing_fic)
 
                 QMessageBox.information(
@@ -1330,13 +1320,12 @@ class MainWindow(QMainWindow):
                     "Status is being synced in the background.",
                 )
 
-                # Aggiorniamo la riga nella tabella per riflettere il cambiamento
                 self._refresh_rows_by_url([data["url"]])
             else:
-                # L'opera esiste ed è già in libreria, non facciamo nulla.
+
                 QMessageBox.warning(self, "Already in Library", "This work is already in your library.")
 
-        else:  # C'è stato un errore generico
+        else:
             QMessageBox.critical(self, "Database Error", "An unexpected error occurred while saving the fic.")
 
         if status_bar:
@@ -1353,18 +1342,18 @@ class MainWindow(QMainWindow):
         Gestore unificato per ogni nuova opera aggiunta da un worker di importazione di massa.
         Aggiorna la UI, il motore di analisi e avvia l'auto-sync se necessario.
         """
-        # DEBUG: Vediamo esattamente cosa abbiamo ricevuto
+
         logger.debug(f"MainWindow received fic_data: {fic_data}")
 
         self._update_fics_table()
         self.analysis_engine.add_fic(fic_data)
 
         if not fic_data.get("from_history"):
-            # DEBUG: Logghiamo quando decidiamo di avviare lo sync
+
             logger.debug("fic_data does not have 'from_history' flag. Starting auto-sync.")
             self.worker_manager.start_auto_sync_for_fic(fic_data)
         else:
-            # DEBUG: Logghiamo quando decidiamo di NON avviare lo sync
+
             logger.debug("fic_data has 'from_history' flag. Skipping auto-sync.")
 
     def _on_delete_fics_clicked(self, urls_to_delete: List[str]) -> None:
@@ -1523,26 +1512,22 @@ class MainWindow(QMainWindow):
 
         logger.info("User initiated logout. Clearing credentials and preparing for restart.")
 
-        import security_manager
+        from ao3_helper.core import security_manager
 
-        # Ottieni l'username attuale per poter cancellare la password dal keyring
         username = config_manager.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME)
         security_manager.delete_password(username)
 
-        # Imposta la configurazione per tornare all'utente "guest" (stringa vuota)
         config_manager.set(
             const.CONFIG_SECTION_CREDS,
             const.CONFIG_KEY_USERNAME,
-            "",  # Una stringa vuota è più pulita di CONFIG_DEFAULT_USER
+            "",
         )
         config_manager.save_config()
 
-        # Informa l'utente
         QMessageBox.information(
             self, "Logged Out", "You have been successfully logged out. The application will now restart."
         )  # noqa: E501
 
-        # Chiudi e riavvia l'applicazione
         QApplication.quit()
         QProcess.startDetached(sys.executable, sys.argv or [])
 

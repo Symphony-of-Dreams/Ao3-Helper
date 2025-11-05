@@ -263,7 +263,7 @@ class AO3Client:
                 response = self.scraping_requester.request("GET", kudos_url)
                 soup = AO3.utils.BeautifulSoup(response.text, "html.parser")
 
-                kudos_p = soup.select_one("div#kudos p.kudos")  # Selettore CSS più specifico
+                kudos_p = soup.select_one("div#kudos p.kudos")
 
                 if not kudos_p:
                     if page == 1:

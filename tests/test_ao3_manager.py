@@ -1,8 +1,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import constants as const
-from ao3_manager import AO3Client
+from ao3_helper import constants as const
+from ao3_helper.core.ao3_manager import AO3Client
 
 
 @patch("ao3_manager.security_manager")

@@ -8,14 +8,45 @@ import AO3
 from AO3 import requester
 from AO3.utils import workid_from_url
 
-import constants as const
-import security_manager
-from config_manager import config_manager
-from logger_setup import logger
+from ao3_helper import constants as const
+from ao3_helper.core import security_manager
+from ao3_helper.core.config_manager import config_manager
+from ao3_helper.logger_setup import logger
 
 DEFAULT_REQUEST_DELAY = 2
 SYNC_REQUEST_DELAY = 1
 RATE_LIMIT_DELAY = 60
+MAX_RETRIES = 5
+
+
+def retry_ao3_request(max_retries=MAX_RETRIES, initial_delay=1, backoff_factor=2):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except AO3.utils.HTTPError as e:
+                    if "rate-limited" in str(e).lower() or "429" in str(e):
+                        delay = initial_delay * (backoff_factor**attempt)
+                        jitter = random.uniform(0, delay * 0.1)  # Add 0-10% jitter
+                        total_delay = delay + jitter
+                        logger.warning(
+                            f"Rate-limit hit (attempt {attempt + 1}/{max_retries}). "
+                            f"Retrying {func.__name__} in {total_delay:.2f} seconds. Details: {e}"
+                        )
+                        time.sleep(total_delay)
+                    else:
+                        logger.error(f"Non-retryable HTTP error in {func.__name__}: {e}")
+                        raise
+                except Exception as e:
+                    logger.error(f"Unexpected error in {func.__name__}: {e}")
+                    raise
+            logger.error(f"Max retries ({max_retries}) exceeded for {func.__name__}.")
+            return None  # Or raise a custom exception
+
+        return wrapper
+
+    return decorator
 
 
 class AO3Client:
@@ -25,6 +56,7 @@ class AO3Client:
     def __init__(self) -> None:
         self.session = self._create_session()
         self.guest_requester = requester.Requester()
+        self.scraping_requester = requester.Requester()
 
     def _create_session(self) -> Optional[AO3.Session]:
         """
@@ -42,25 +74,30 @@ class AO3Client:
         logger.info(f"Found credentials for user '{username}'. Attempting login...")
 
         max_retries = 3
+        initial_delay = 5  # seconds
+        backoff_factor = 2
+
         for attempt in range(max_retries):
             try:
                 session = AO3.Session(username, password)
                 logger.info("AO3 login successful!")
                 return session
             except AO3.utils.HTTPError as e:
-                if "rate-limited" in str(e).lower():
+                if "rate-limited" in str(e).lower() or "429" in str(e):
+                    delay = initial_delay * (backoff_factor**attempt)
+                    jitter = random.uniform(0, delay * 0.1)  # Add 0-10% jitter
+                    total_delay = delay + jitter
                     logger.warning(
-                        f"Login attempt {attempt + 1}/{max_retries} was rate-limited. Retrying in {const.RATE_LIMIT_DELAY} seconds..."  # noqa: E501
+                        f"Login attempt {attempt + 1}/{max_retries} was rate-limited. "
+                        f"Retrying in {total_delay:.2f} seconds. Details: {e}"
                     )
                     if attempt + 1 < max_retries:
-                        time.sleep(const.RATE_LIMIT_DELAY)
+                        time.sleep(total_delay)
                     continue
                 else:
-
                     logger.error(f"AO3 login failed due to a non-recoverable HTTP error: {e}")
                     return None
             except Exception as e:
-
                 logger.error(f"AO3 login failed! Check credentials in config.ini. Details: {e}")
                 return None
 
@@ -82,37 +119,37 @@ class AO3Client:
         self.session = self._create_session()
         return self.session is not None
 
-    def fetch_fic_data(self, url: str, authenticated_fallback: bool = False) -> Optional[Dict[str, Any]]:
-        logger.debug(f"Attempting to fetch data for URL: {url}")
+    @retry_ao3_request()
+    def fetch_fic_data(self, url: str, use_auth: bool = False) -> Optional[Dict[str, Any]]:
+        logger.debug(f"Attempting to fetch data for URL: {url} (Use Auth: {use_auth})")
+        work = None
 
         try:
-
             work_id = int(url.split("/")[-1])
-            guest_work = AO3.Work(work_id, load=False)
-            guest_work._requester = self.guest_requester
-            guest_work.reload()
-            work = guest_work
+
+            # Scegliamo il requester in base all'input
+            requester_to_use = self.guest_requester
+            if use_auth and self.session:
+                logger.info(f"Fetching {url} using AUTHENTICATED session as requested.")
+                # IMPORTANTE: Usiamo la sessione direttamente, accettando il rischio
+                # perché l'utente ha dato il consenso.
+                requester_to_use = self.session
+            elif use_auth and not self.session:
+                logger.warning("Authenticated fetch requested, but user is not logged in. Falling back to guest.")
+            else:
+                logger.info(f"Fetching {url} using GUEST session.")
+
+            # Usiamo un oggetto Work 'vuoto' e gli assegnamo il requester scelto
+            work_obj = AO3.Work(work_id, load=False)
+            work_obj._requester = requester_to_use
+            work_obj.reload()  # Questa chiamata ora usa il requester giusto
+            work = work_obj
 
         except (AttributeError, AO3.utils.AuthError):
-
-            logger.warning(f"Guest fetch failed for {url}. It may be private or deleted.")
-
-            if authenticated_fallback and self.session:
-                logger.info(f"Executing authenticated fallback for {url}. This will count as a visit.")
-                try:
-
-                    work = AO3.Work(work_id, session=self.session)
-
-                except Exception as auth_e:
-                    logger.error(f"Authenticated fallback also failed for {url}. Details: {auth_e}")
-                    return None
-            else:
-
-                return None
+            logger.warning(f"Fetch failed for {url}. It may be private, deleted, or require login.")
+            return None
         except AO3.utils.HTTPError as e:
-
             logger.warning(f"Network error fetching {url}. Details: {e}")
-
             return None
         except Exception:
             logger.exception(f"An unexpected error occurred while fetching data for URL: {url}")
@@ -175,6 +212,7 @@ class AO3Client:
         logger.info(f"Successfully fetched data for '{work.title}' (ID: {work_id}).")
         return fic_details
 
+    @retry_ao3_request()
     def get_work_ids_from_user(self, url_or_username: str) -> List[int] | Dict[str, str]:
         logger.info(f"Fetching all work IDs for user: {url_or_username}")
         try:
@@ -217,31 +255,39 @@ class AO3Client:
             return False
         logger.debug(f"Checking kudos for user '{username}' on work {work_id}...")
         try:
-            temp_work = AO3.Work(work_id, session=self.session)
             page = 1
             while True:
                 kudos_url = f"https://archiveofourown.org/works/{work_id}/kudos?page={page}"
                 logger.debug(f"Scraping kudos page: {kudos_url}")
-                soup = temp_work.request(kudos_url)
-                kudos_list = soup.find("div", {"id": "kudos"})
-                if not kudos_list:
+
+                response = self.scraping_requester.request("GET", kudos_url)
+                soup = AO3.utils.BeautifulSoup(response.text, "html.parser")
+
+                kudos_p = soup.select_one("div#kudos p.kudos")  # Selettore CSS più specifico
+
+                if not kudos_p:
+                    if page == 1:
+                        logger.warning(f"Could not find the kudos paragraph on page 1 for work {work_id}.")
                     break
-                if kudos_list.find(string=re.compile(username, re.IGNORECASE)):
+
+                # MODIFICA CHIAVE: Cerca tutti i link <a> e controlla il loro testo.
+                # Questo è molto più robusto della ricerca di una stringa generica.
+                found = False
+                for link in kudos_p.find_all("a"):
+                    if link.string and link.string.strip().lower() == username.lower():
+                        found = True
+                        break
+
+                if found:
                     logger.info(f"Kudos found for user '{username}' on work {work_id}.")
                     return True
+
                 next_page = soup.find("li", {"class": "next"})
                 if not next_page or next_page.find("span", {"class": "disabled"}):
                     break
                 page += 1
 
                 time.sleep(const.SYNC_REQUEST_DELAY)
-
-        except AO3.utils.HTTPError as e:
-            logger.warning(
-                f"Rate-limit hit while checking kudos for work {work_id}. Pausing for {const.RATE_LIMIT_DELAY} seconds. Details: {e}"  # noqa: E501
-            )
-            time.sleep(const.RATE_LIMIT_DELAY)
-            return False
 
         except Exception as e:
             logger.error(f"An error occurred while checking kudos: {e}")
@@ -254,56 +300,57 @@ class AO3Client:
             return False
         logger.debug(f"Checking comments for user '{username}' on work {work_id}...")
         try:
-            work = AO3.Work(work_id, load=False)
-            work._requester = self.guest_requester
 
-            if not work.chapters:
-                work.reload()
+            @retry_ao3_request()
+            def _request_comments_page(url):
+                response = self.scraping_requester.request("GET", url)
+                return AO3.utils.BeautifulSoup(response.text, "html.parser")
 
-            for i in range(work.nchapters):
-                chapter_number = i + 1
-                if work.nchapters > 1:
-                    logger.debug(f"Checking comments for chapter {chapter_number}/{work.nchapters}...")
+            page = 1
+            while True:
+                comments_url = f"https://archiveofourown.org/comments/show_comments?page={page}&view_full_work=true&work_id={work_id}"
+                logger.debug(f"Scraping direct comments URL: {comments_url}")
 
-                work.chapter = chapter_number
-                chapter_comments = work.get_comments(9999)
+                soup = _request_comments_page(comments_url)
+                if soup is None:
+                    return False
 
-                for comment in chapter_comments:
-                    if (
-                        hasattr(comment, "author")
-                        and hasattr(comment.author, "username")
-                        and comment.author.username.lower() == username.lower()
-                    ):
-                        logger.info(f"Comment found for user '{username}' on work {work_id}.")
-                        return True
+                comment_list_items = soup.select("li.comment")
 
-                    time.sleep(0.5)
+                if not comment_list_items and page == 1:
+                    logger.info(f"No comment list items ('li.comment') found for work {work_id}.")
+                    break
 
-                    for reply in comment.get_thread():
-                        if (
-                            hasattr(reply, "author")
-                            and hasattr(reply.author, "username")
-                            and reply.author.username.lower() == username.lower()
-                        ):
-                            logger.info(f"Comment (in thread) found for user '{username}' on work {work_id}.")
-                            return True
-                if work.nchapters > 1:
-                    time.sleep(const.SYNC_REQUEST_DELAY)
+                found = False
+                for comment_li in comment_list_items:
+                    # SELETTORE DEFINITIVO E CORRETTO:
+                    # Seleziona il primo link <a> dentro un <h4 class="byline">.
+                    # Questo è più robusto perché non dipende dall'attributo rel="author".
+                    author_link = comment_li.select_one("h4.byline a")
 
-        except AO3.utils.HTTPError as e:
-            logger.warning(
-                f"Rate-limit hit while checking comments for work {work_id}. Pausing for {const.RATE_LIMIT_DELAY} seconds. Details: {e}"  # noqa: E501
-            )
-            time.sleep(const.RATE_LIMIT_DELAY)
+                    if author_link and author_link.string and author_link.string.strip().lower() == username.lower():
+                        found = True
+                        break
 
+                if found:
+                    logger.info(f"Comment found for user '{username}' on work {work_id}.")
+                    return True
+
+                next_page_link = soup.select_one("li.next a")
+                if not next_page_link:
+                    break
+
+                page += 1
+                time.sleep(const.SYNC_REQUEST_DELAY)
+
+            logger.info(f"Comment not found for user '{username}' on work {work_id}.")
             return False
 
         except Exception:
             logger.exception(f"An unexpected error occurred while checking comments for work {work_id}")
+            return False
 
-        logger.info(f"Comment not found for user '{username}' on work {work_id}.")
-        return False
-
+    @retry_ao3_request()
     def get_bookmarks_from_user(self) -> List[int] | Dict[str, str]:
         """
         Recupera tutti i work ID dai bookmark dell'utente loggato.
@@ -363,6 +410,7 @@ class AO3Client:
             logger.exception(f"An unexpected error occurred while fetching bookmarks for {username}")
             return {"error": "An unexpected error occurred while fetching bookmarks."}
 
+    @retry_ao3_request()
     def get_random_bookmarks_from_author(self, username: str, num_to_sample: int = 5) -> List[int]:
         """
         Recupera un campione casuale di work ID dai bookmark pubblici di un utente,
@@ -414,6 +462,7 @@ class AO3Client:
             logger.exception(f"An unexpected error occurred while fetching random bookmarks for {username}")
             return []
 
+    @retry_ao3_request()
     def get_work_ids_from_collection(self, collection_name: str) -> List[int] | Dict[str, str]:
         logger.info(f"Fetching all work IDs for collection: {collection_name}")
         try:
@@ -460,6 +509,7 @@ class AO3Client:
             logger.exception(f"An unexpected error occurred while fetching works for collection {collection_name}")
             return {"error": "An unexpected error occurred while fetching collection's works."}
 
+    @retry_ao3_request()
     def get_work_ids_from_series(self, series_id: str) -> List[int] | Dict[str, str]:
         """
         Recupera tutti i work ID da una serie tramite parsing diretto dell'HTML.
@@ -511,6 +561,7 @@ class AO3Client:
             logger.exception(f"An unexpected error occurred while fetching works for series {series_id}")
             return {"error": "An unexpected error occurred while fetching the series."}
 
+    @retry_ao3_request()
     def get_history_from_user(self) -> List[Dict[str, Any]] | Dict[str, str]:
         """
         Recupera l'intera cronologia di lettura ("History") per l'utente loggato.

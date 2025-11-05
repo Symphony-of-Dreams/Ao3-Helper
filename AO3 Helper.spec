@@ -9,12 +9,19 @@ numpy_basedir = os.path.dirname(get_module_file_attribute('numpy'))
 
 block_cipher = None
 
+entry_point = os.path.join('src', 'main.py')
+analysis_paths = [os.path.join(os.getcwd(), 'src')]
+
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    [entry_point], 
+    pathex=analysis_paths, 
     binaries=[],
     
-    datas=[(numpy_basedir, 'numpy')],
+    datas=[
+        (numpy_basedir, 'numpy'),
+        
+        ('assets', 'assets') 
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -43,7 +50,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\app_icon.ico'],
+    icon=os.path.join('assets', 'app_icon.ico')
 )
 coll = COLLECT(
     exe,

@@ -1,8 +1,7 @@
-
 import keyring
 from keyring.errors import NoKeyringError
 
-from logger_setup import logger
+from ao3_helper.logger_setup import logger
 
 SERVICE_NAME = "ao3_helper"
 

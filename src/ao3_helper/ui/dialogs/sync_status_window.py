@@ -5,7 +5,7 @@ from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 if TYPE_CHECKING:
-    from workers import TotalSyncWorker
+    from ao3_helper.workers.workers import TotalSyncWorker
 
 
 class SyncStatusWindow(QDialog):

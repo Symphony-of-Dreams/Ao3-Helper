@@ -2,7 +2,7 @@ import logging
 import sys
 from logging import Logger
 
-import constants as const
+from ao3_helper import constants as const
 
 
 def setup_logging() -> Logger:

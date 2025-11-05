@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from database import get_reading_queue, remove_fics_from_queue, update_queue_order
+from ao3_helper.core.database import get_reading_queue, remove_fics_from_queue, update_queue_order
 
 
 class ReadingQueueDialog(QDialog):

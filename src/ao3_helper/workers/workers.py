@@ -3,19 +3,30 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple, cast
 
 import AO3
+from playhouse.shortcuts import model_to_dict
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from wordcloud import WordCloud
 
-import constants as const
-from analysis_engine import AnalysisEngine
-from ao3_manager import ao3_client
-from config_manager import config_manager
-from database import Fic, add_fic, add_or_update_fic_from_history, get_existing_urls, update_fic_status
-from logger_setup import logger
-from query_builder import build_discovery_query
+from ao3_helper import constants as const
+from ao3_helper.core.analysis_engine import AnalysisEngine
+from ao3_helper.core.ao3_manager import ao3_client
+from ao3_helper.core.config_manager import config_manager
+from ao3_helper.core.database import (
+    Fic,
+    add_fic,
+    add_or_update_fic_from_history,
+    get_existing_urls,
+    get_fic_by_url,
+    get_fics_to_update,
+    set_fic_in_library,
+    update_fic_data,
+    update_fic_status,
+)
+from ao3_helper.core.query_builder import build_discovery_query
+from ao3_helper.logger_setup import logger
 
 if TYPE_CHECKING:
-    from analysis_engine import AnalysisEngine
+    from ao3_helper.core.analysis_engine import AnalysisEngine
 
 
 class BaseImportWorker(QObject):
@@ -28,6 +39,7 @@ class BaseImportWorker(QObject):
     finished = pyqtSignal()
     progress = pyqtSignal(int, int)
     new_fic_added = pyqtSignal(dict)
+    fic_promoted = pyqtSignal(dict)
     error = pyqtSignal(str)
 
     def __init__(self, identifier: str) -> None:
@@ -66,8 +78,6 @@ class BaseImportWorker(QObject):
         total_works = len(work_ids)
         logger.info(f"Found {total_works} works to process.")
 
-        existing_urls = get_existing_urls()
-
         for i, work_id in enumerate(work_ids):
             if self._is_cancelled:
                 logger.warning("Import worker was cancelled.")
@@ -79,15 +89,23 @@ class BaseImportWorker(QObject):
             self.progress.emit(i + 1, total_works)
             fic_url = f"https://archiveofourown.org/works/{work_id}"
 
-            if fic_url in existing_urls:
-                continue
-
             try:
                 data = ao3_client.fetch_fic_data(fic_url)
                 if data:
-                    if add_fic(data):
-
+                    success, reason = add_fic(data)
+                    if success:
                         self.new_fic_added.emit(data)
+
+                    elif reason == "exists":
+                        existing_fic = get_fic_by_url(fic_url)
+                        if existing_fic and not existing_fic.get("is_in_library"):
+                            logger.info(f"Promoting existing fic to library during mass import: {fic_url}")
+                            set_fic_in_library(fic_url)
+
+                            # MODIFICA CHIAVE: Emettiamo il nuovo segnale con i dati dell'opera
+                            self.fic_promoted.emit(existing_fic)
+                        else:
+                            logger.debug(f"Skipping existing and already-in-library fic: {fic_url}")
 
                 time.sleep(const.DEFAULT_REQUEST_DELAY)
 
@@ -102,7 +120,7 @@ class BaseImportWorker(QObject):
 class AddFicWorker(QObject):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
-    private_fic_detected = pyqtSignal(str)
+    private_fic_detected = pyqtSignal(str)  # Segnale già esistente
 
     def __init__(self, url: str, use_auth_fallback: bool = False):
         super().__init__()
@@ -111,24 +129,23 @@ class AddFicWorker(QObject):
 
     @pyqtSlot()
     def run(self):
-        logger.info(f"AddFicWorker started for URL: {self.url}")
+        logger.info(f"AddFicWorker started for URL: {self.url} (Authenticated: {self.use_auth_fallback})")
         try:
-            data = ao3_client.fetch_fic_data(self.url, authenticated_fallback=self.use_auth_fallback)
+            data = ao3_client.fetch_fic_data(self.url, use_auth=self.use_auth_fallback)
 
             if data:
-
                 self.finished.emit(data)
             else:
-
-                if not self.use_auth_fallback and ao3_client.session:
-
+                # Se i dati non vengono trovati E non stavamo già usando l'autenticazione,
+                # allora è un'opera potenzialmente privata.
+                if not self.use_auth_fallback:
                     self.private_fic_detected.emit(self.url)
-
+                    # Emettiamo finished(None) per dire alla MainWindow che questo specifico
+                    # tentativo è concluso, ma non è un errore.
                     self.finished.emit(None)
                 else:
-
-                    self.error.emit("Could not retrieve data. The work might be deleted or you are not logged in.")
-
+                    # Se anche con l'autenticazione non troviamo nulla, è un errore.
+                    self.error.emit("Could not retrieve data. The work might be deleted or the URL is incorrect.")
         except Exception as e:
             logger.exception(f"Exception in AddFicWorker for URL {self.url}")
             self.error.emit(str(e))
@@ -140,7 +157,6 @@ class UpdateCheckWorker(QObject):
     new_notification = pyqtSignal(str, str)
 
     def run(self) -> None:
-        from database import get_fics_to_update, update_fic_data
 
         fics_to_check = get_fics_to_update()
         logger.info(f"Starting update check for {len(fics_to_check)} incomplete fics.")
@@ -252,24 +268,28 @@ class ImportHistoryWorker(QObject):
                 if fic_url in existing_urls:
 
                     logger.debug(f"Work {work_id} already exists. Updating history data only.")
-                    query = Fic.update(
-                        is_in_history=True,
-                        last_visit_date=item.get("last_visit_date"),
-                        visit_count=item.get("visit_count"),
-                    ).where(Fic.url == fic_url)
-                    query.execute()
-                    self.new_fic_added.emit()
+                    _, fic_instance = add_or_update_fic_from_history(item)
+                    if fic_instance:
+                        fic_data_dict = model_to_dict(fic_instance)
+                        fic_data_dict["from_history"] = True
+                        logger.debug(f"HistoryWorker emitting existing fic: {fic_data_dict}")
+                        self.new_fic_added.emit(fic_data_dict)
                 else:
-
                     logger.debug(f"Work {work_id} is new. Fetching full metadata.")
                     data = ao3_client.fetch_fic_data(fic_url)
                     if data:
-
                         data["last_visit_date"] = item.get("last_visit_date")
                         data["visit_count"] = item.get("visit_count")
-                        created, _ = add_or_update_fic_from_history(data)
-                        if created:
-                            self.new_fic_added.emit(data)
+                        data["from_history"] = True  # Aggiungiamo il flag
+                        created, fic_instance = add_or_update_fic_from_history(data)
+                        if created and fic_instance:
+                            # Convertiamo il modello Peewee in un dizionario
+                            fic_data_dict_new = model_to_dict(fic_instance)
+                            # Assicuriamoci che il flag sia presente anche qui
+                            fic_data_dict_new["from_history"] = True
+                            # DEBUG: Controlliamo cosa stiamo per emettere
+                            logger.debug(f"HistoryWorker emitting new fic: {fic_data_dict_new}")
+                            self.new_fic_added.emit(fic_data_dict_new)
 
                             existing_urls.add(fic_url)
 
@@ -389,11 +409,13 @@ class TotalSyncWorker(QObject):
             try:
                 work_id = int(fic["url"].split("/")[-1])
 
-                time.sleep(const.FAST_SYNC_DELAY)
+                # Introduce a random delay to humanize the requests
+                time.sleep(random.uniform(const.HUMAN_SYNC_DELAY_MIN, const.HUMAN_SYNC_DELAY_MAX))
 
                 has_commented = ao3_client.check_comment(work_id, username)
 
-                time.sleep(const.FAST_SYNC_DELAY)
+                # Introduce another random delay between checks for the same fic
+                time.sleep(random.uniform(const.HUMAN_SYNC_DELAY_MIN, const.HUMAN_SYNC_DELAY_MAX))
 
                 has_kudosed = ao3_client.check_kudos(work_id, username)
 
@@ -407,7 +429,7 @@ class TotalSyncWorker(QObject):
                     update_fic_status(fic["url"], new_status, verified=1)
                     updated_count += 1
                     logger.info(f"Updated status for '{fic['title']}' to '{new_status}'.")
-                    from database import get_fic_by_url
+                    from ao3_helper.core.database import get_fic_by_url
 
                     updated_fic_data = get_fic_by_url(fic["url"])
                     if updated_fic_data:

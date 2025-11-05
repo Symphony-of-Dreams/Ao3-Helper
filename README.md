@@ -79,29 +79,53 @@ You have two options for running AO3 Helper. The recommended method for most use
 
 ### Option 2: For Developers (Running from Source)
 
-If you prefer to run the application directly from the source code, you can do so by following these steps:
+If you wish to run the application from the source code to contribute or for development purposes, please follow these steps.
 
-1.  **Install Python:** Ensure you have Python 3.11 or newer installed.
-2.  **Clone the repository:**
+#### 1. Prerequisites
+
+-   **Python:** Ensure you have **Python 3.11** or newer installed and added to your system's PATH.
+-   **Git:** You need Git to clone the repository.
+
+#### 2. Setup
+
+1.  **Clone the repository:**
+    Open your terminal or command prompt and run:
     ```bash
     git clone https://github.com/Symphony-of-Dreams/ao3-helper.git
     cd ao3-helper
     ```
-    
-3.  **Create a virtual environment:**
+
+2.  **Create and activate a virtual environment:**
+    This is a crucial step to keep the project's dependencies isolated.
     ```bash
+    # Create the virtual environment
     python -m venv venv
-    venv\Scripts\activate  # On Windows
+
+    # Activate it (for Windows Command Prompt/PowerShell)
+    venv\Scripts\activate
     ```
-    
-4.  **Install dependencies:**
+    *(For other terminals like Git Bash on Windows, or on macOS/Linux, the command would be `source venv/bin/activate`)*
+
+3.  **Install the project in editable mode:**
+    This command reads the `pyproject.toml` and `requirements.txt` files and installs all dependencies. The `-e` flag (editable) means that any changes you make to the source code will be immediately effective without needing to reinstall.
     ```bash
-    pip install -r requirements.txt
+    pip install -e .
     ```
-5.  **Run the application:**
-    ```bash
-    python main.py
-    ```
+
+#### 3. Running the Application
+
+You now have two simple options to run the application:
+
+**Option A: Using the Run Script (Recommended for Windows)**
+
+Simply double-click the `run.bat` file in the project's root directory. This will automatically activate the virtual environment and start the application.
+
+**Option B: Using the Command Line**
+
+If you prefer using the terminal (or if you are not on Windows), run the following command from the project's **root directory**:
+```bash
+python src/main.py
+```
 
 ## Tech Stack
 

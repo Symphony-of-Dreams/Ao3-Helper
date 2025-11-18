@@ -792,13 +792,8 @@ class UIManager:
 
     @pyqtSlot(str)
     def select_fic_from_url(self, url: str) -> None:
-        """Selects a fic in the main table based on a URL received from a child dialog."""
-        row_index = self.main_window._find_row_by_url(url)
-        if row_index is not None:
-            self.main_window.fics_table.selectRow(row_index)
-            item = self.main_window.fics_table.item(row_index, 0)
-            if item:
-                self.main_window.fics_table.scrollToItem(item)
+
+        self.main_window._select_fic_from_url(url)
 
     @pyqtSlot()
     def on_recommendation_select(self) -> None:

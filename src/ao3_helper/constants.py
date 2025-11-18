@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.8"
 APP_NAME = "AO3_Helper"
 
 LATEST_DB_VERSION = 6

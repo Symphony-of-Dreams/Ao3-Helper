@@ -704,10 +704,18 @@ class AuthorRecsWorker(QObject):
             for candidate in all_candidates:
                 if not self._is_running:
                     break
-                data = ao3_client.fetch_fic_data(candidate["url"])
-                if data:
+
+                # Recupera il DTO
+                dto = ao3_client.fetch_fic_data(candidate["url"])
+
+                if dto:
+
+                    data = asdict(dto)
+
                     data["recommended_by"] = candidate["recommended_by"]
+
                     fetched_fics.append(data)
+
                 time.sleep(const.DEFAULT_REQUEST_DELAY)
 
             if not self._is_running:

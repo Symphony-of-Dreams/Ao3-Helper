@@ -11,6 +11,8 @@ from AO3.utils import workid_from_url
 from ao3_helper import constants as const
 from ao3_helper.core import security_manager
 from ao3_helper.core.config_manager import config_manager
+from ao3_helper.core.domain import FicDTO
+from ao3_helper.core.network import limiter
 from ao3_helper.logger_setup import logger
 
 DEFAULT_REQUEST_DELAY = 2
@@ -19,9 +21,12 @@ RATE_LIMIT_DELAY = 60
 MAX_RETRIES = 5
 
 
-def retry_ao3_request(max_retries=MAX_RETRIES, initial_delay=1, backoff_factor=2):
+def retry_ao3_request(max_retries=MAX_RETRIES, initial_delay=5, backoff_factor=2):
     def decorator(func):
         def wrapper(*args, **kwargs):
+
+            limiter.acquire()
+
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
@@ -42,7 +47,7 @@ def retry_ao3_request(max_retries=MAX_RETRIES, initial_delay=1, backoff_factor=2
                     logger.error(f"Unexpected error in {func.__name__}: {e}")
                     raise
             logger.error(f"Max retries ({max_retries}) exceeded for {func.__name__}.")
-            return None  # Or raise a custom exception
+            return None
 
         return wrapper
 
@@ -74,7 +79,7 @@ class AO3Client:
         logger.info(f"Found credentials for user '{username}'. Attempting login...")
 
         max_retries = 3
-        initial_delay = 5  # seconds
+        initial_delay = 5
         backoff_factor = 2
 
         for attempt in range(max_retries):
@@ -127,28 +132,29 @@ class AO3Client:
         try:
             work_id = int(url.split("/")[-1])
 
-            # Scegliamo il requester in base all'input
             requester_to_use = self.guest_requester
             if use_auth and self.session:
                 logger.info(f"Fetching {url} using AUTHENTICATED session as requested.")
-                # IMPORTANTE: Usiamo la sessione direttamente, accettando il rischio
-                # perché l'utente ha dato il consenso.
+
                 requester_to_use = self.session
             elif use_auth and not self.session:
                 logger.warning("Authenticated fetch requested, but user is not logged in. Falling back to guest.")
             else:
                 logger.info(f"Fetching {url} using GUEST session.")
 
-            # Usiamo un oggetto Work 'vuoto' e gli assegnamo il requester scelto
             work_obj = AO3.Work(work_id, load=False)
             work_obj._requester = requester_to_use
-            work_obj.reload()  # Questa chiamata ora usa il requester giusto
+            work_obj.reload()
             work = work_obj
 
         except (AttributeError, AO3.utils.AuthError):
             logger.warning(f"Fetch failed for {url}. It may be private, deleted, or require login.")
             return None
         except AO3.utils.HTTPError as e:
+
+            if "rate-limited" in str(e).lower() or "429" in str(e):
+                raise
+
             logger.warning(f"Network error fetching {url}. Details: {e}")
             return None
         except Exception:
@@ -159,58 +165,36 @@ class AO3Client:
             logger.error(f"Failed to retrieve a valid Work object for ID: {work.workid if work else url}")
             return None
 
-        nchapters = work.nchapters
-        expected_chapters = work.expected_chapters
-        chapters_str = f"{nchapters}/{expected_chapters or '?'}"
-        is_complete = expected_chapters is not None and nchapters == expected_chapters
+        dto = FicDTO(
+            url=work.url,
+            work_id=work_id,
+            title=work.title,
+            authors=[user.username for user in work.authors],
+            fandoms=work.fandoms,
+            tags=work.tags,
+            relationships=work.relationships,
+            characters=work.characters,
+            categories=work.categories,
+            rating=(", ".join(work.rating) if isinstance(work.rating, list) else (work.rating or "")),
+            language=work.language or "",
+            word_count=work.words,
+            chapter_count=work.nchapters,
+            expected_chapters=work.expected_chapters,
+            is_complete=work.expected_chapters is not None and work.nchapters == work.expected_chapters,
+            summary=work.summary,
+            date_published=work.date_published.strftime("%Y-%m-%d") if work.date_published else "",
+            date_updated=work.date_updated.strftime("%Y-%m-%d") if work.date_updated else "",
+            hits=work.hits or 0,
+            kudos=work.kudos or 0,
+            bookmarks=work.bookmarks or 0,
+            comments=work.comments or 0,
+            series_name=work.series[0].name if work.series else None,
+            series_url=work.series[0].url if work.series else None,
+            series_part=None,
+        )
 
-        series_name = ""
-        series_url = ""
-        series_part = None
-        if work.series:
-            main_series = work.series[0]
-            series_name = main_series.name
-            series_url = main_series.url
-
-        date_published = work.date_published.strftime("%Y-%m-%d") if work.date_published else ""
-        date_updated = work.date_updated.strftime("%Y-%m-%d") if work.date_updated else ""
-
-        language = work.language or ""
-        hits = work.hits or 0
-        kudos = work.kudos or 0
-        bookmarks = work.bookmarks or 0
-        comments = work.comments or 0
-        source = "manual"
-
-        fic_details = {
-            "url": work.url,
-            "title": work.title,
-            "author": ", ".join(user.username for user in work.authors),
-            "summary": work.summary,
-            "rating": (", ".join(work.rating) if isinstance(work.rating, list) else work.rating),
-            "fandoms": ", ".join(work.fandoms),
-            "tags": ", ".join(work.tags),
-            "word_count": work.words,
-            "category": ", ".join(work.categories),
-            "relationships": ", ".join(work.relationships),
-            "characters": ", ".join(work.characters),
-            "is_complete": is_complete,
-            "series_name": series_name,
-            "series_url": series_url,
-            "series_part": series_part,
-            "chapters": chapters_str,
-            "date_published": date_published,
-            "date_updated": date_updated,
-            "source": source,
-            "language": language,
-            "hits": hits,
-            "kudos": kudos,
-            "bookmarks": bookmarks,
-            "comments": comments,
-        }
-
-        logger.info(f"Successfully fetched data for '{work.title}' (ID: {work_id}).")
-        return fic_details
+        logger.info(f"Successfully fetched DTO for '{dto.title}' (ID: {dto.work_id}).")
+        return dto
 
     @retry_ao3_request()
     def get_work_ids_from_user(self, url_or_username: str) -> List[int] | Dict[str, str]:
@@ -239,7 +223,7 @@ class AO3Client:
                 if not found_works_on_page:
                     logger.debug("No new works found on this page. Ending search.")
                     break
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
+
                 page += 1
             logger.info(f"Found {len(all_work_ids)} works in total for user {username}.")
             return all_work_ids
@@ -270,8 +254,6 @@ class AO3Client:
                         logger.warning(f"Could not find the kudos paragraph on page 1 for work {work_id}.")
                     break
 
-                # MODIFICA CHIAVE: Cerca tutti i link <a> e controlla il loro testo.
-                # Questo è molto più robusto della ricerca di una stringa generica.
                 found = False
                 for link in kudos_p.find_all("a"):
                     if link.string and link.string.strip().lower() == username.lower():
@@ -286,8 +268,6 @@ class AO3Client:
                 if not next_page or next_page.find("span", {"class": "disabled"}):
                     break
                 page += 1
-
-                time.sleep(const.SYNC_REQUEST_DELAY)
 
         except Exception as e:
             logger.error(f"An error occurred while checking kudos: {e}")
@@ -323,9 +303,7 @@ class AO3Client:
 
                 found = False
                 for comment_li in comment_list_items:
-                    # SELETTORE DEFINITIVO E CORRETTO:
-                    # Seleziona il primo link <a> dentro un <h4 class="byline">.
-                    # Questo è più robusto perché non dipende dall'attributo rel="author".
+
                     author_link = comment_li.select_one("h4.byline a")
 
                     if author_link and author_link.string and author_link.string.strip().lower() == username.lower():
@@ -341,7 +319,6 @@ class AO3Client:
                     break
 
                 page += 1
-                time.sleep(const.SYNC_REQUEST_DELAY)
 
             logger.info(f"Comment not found for user '{username}' on work {work_id}.")
             return False
@@ -400,7 +377,6 @@ class AO3Client:
                     logger.debug("No 'next page' link found. Ending bookmarks search.")
                     break
 
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} bookmarks in total for user {username}.")
@@ -495,7 +471,6 @@ class AO3Client:
                     logger.debug("No new works found on this page. Ending search.")
                     break
 
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} works in total for collection {collection_name}.")
@@ -547,7 +522,6 @@ class AO3Client:
                     logger.debug("No 'next page' link found. Ending search.")
                     break
 
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_work_ids)} works in total for series {series_id}.")
@@ -643,7 +617,6 @@ class AO3Client:
                     logger.debug("No 'next page' link found. Ending history search.")
                     break
 
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
                 page += 1
 
             logger.info(f"Found {len(all_history_items)} history entries in total for user {username}.")
@@ -666,9 +639,10 @@ def parse_ao3_url(url: str) -> tuple[str, str | None]:
         url_type can be 'work', 'author', 'collection', 'series', or 'unknown'.
         identifier is the extracted ID or name, or None.
     """
-    work_match = re.search(r"/works/(\d+)", url)
-    if work_match:
-        return ("work", work_match.group(1))
+
+    collection_match = re.search(r"/collections/([^/]+)", url)
+    if collection_match:
+        return ("collection", collection_match.group(1).split("/")[0])
 
     author_works_match = re.search(r"/users/([^/]+)/works", url)
     if author_works_match:
@@ -678,12 +652,12 @@ def parse_ao3_url(url: str) -> tuple[str, str | None]:
     if author_profile_match:
         return ("author", author_profile_match.group(1))
 
-    collection_match = re.search(r"/collections/([^/]+)", url)
-    if collection_match:
-        return ("collection", collection_match.group(1).split("/")[0])
-
     series_match = re.search(r"/series/(\d+)", url)
     if series_match:
         return ("series", series_match.group(1))
+
+    work_match = re.search(r"/works/(\d+)", url)
+    if work_match:
+        return ("work", work_match.group(1))
 
     return ("unknown", None)

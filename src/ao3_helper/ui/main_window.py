@@ -13,7 +13,6 @@ from PyQt6.QtCore import (
     QPoint,
     QProcess,
     QStringListModel,
-    Qt,
     QThread,
     pyqtSlot,
 )
@@ -34,7 +33,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QWidget,
 )
@@ -44,32 +42,18 @@ from ao3_helper.core.analysis_engine import AnalysisEngine
 from ao3_helper.core.ao3_manager import parse_ao3_url
 from ao3_helper.core.config_manager import config_manager
 from ao3_helper.core.database import (
-    add_fic,
-    add_fics_to_queue,
     add_notification,
-    assign_tag_to_fic,
-    bulk_add_tags,
-    bulk_remove_tags,
-    bulk_update_status,
     calculate_base_stats,
     count_read_uncommented_fics,
     count_verified_statuses,
-    delete_fic,
     get_data_for_charts,
     get_db_path_for_user,
-    get_fic_by_url,
-    get_filtered_fics,
-    get_or_create_tag,
-    get_tags_for_fic,
     get_unread_notifications,
-    remove_fics_from_queue,
     remove_tag_from_fic,
-    update_fic_notes,
-    update_fic_rating,
-    update_fic_status,
 )
 from ao3_helper.core.models import db
 from ao3_helper.logger_setup import logger
+from ao3_helper.services.library_service import LibraryService
 from ao3_helper.ui.dialogs.achievements_window import AchievementsWindow
 from ao3_helper.ui.dialogs.author_recs_dialog import AuthorRecsDialog
 from ao3_helper.ui.dialogs.bulk_edit_dialog import BulkEditDialog
@@ -81,7 +65,6 @@ from ao3_helper.ui.dialogs.reading_queue_dialog import ReadingQueueDialog
 from ao3_helper.ui.dialogs.recommendation_center_dialog import RecommendationCenterDialog
 from ao3_helper.ui.dialogs.tag_management_window import TagManagementWindow
 from ao3_helper.ui.filter_manager import FilterManager
-from ao3_helper.ui.ui_components import NumericTableWidgetItem
 from ao3_helper.ui.ui_manager import NoteWidget, UIManager
 from ao3_helper.workers.gamification import check_for_achievements
 from ao3_helper.workers.worker_manager import WorkerManager
@@ -166,6 +149,8 @@ class MainWindow(QMainWindow):
         self.manual_override_enabled: bool
         self.current_theme: str
         self.column_map: List[str]
+        self.library_service = LibraryService()
+        self.filter_manager = FilterManager(self)
 
         self.welcome_label: QLabel
         self.fics_table: QTableWidget
@@ -316,35 +301,39 @@ class MainWindow(QMainWindow):
             status_bar.showMessage("Analysis engine ready.", 3000)
 
     def _open_fics_table_context_menu(self, position: QPoint) -> None:
-        selected_items = self.fics_table.selectedItems()
-        if not selected_items:
+
+        selected_proxy_indexes = self.fics_table.selectionModel().selectedRows()
+
+        if not selected_proxy_indexes:
             return
 
-        selected_urls_set: set[str] = set()
-        for item in selected_items:
-            url_item = self.fics_table.item(item.row(), 0)
-            if url_item:
-                url = url_item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(url, str):
-                    selected_urls_set.add(url)
+        selected_urls = []
+        for proxy_idx in selected_proxy_indexes:
 
-        selected_urls = sorted(list(selected_urls_set))
+            source_idx = self.proxy_model.mapToSource(proxy_idx)
+
+            fic_data = self.fic_model.get_fic_at(source_idx.row())
+
+            if fic_data and "url" in fic_data:
+                selected_urls.append(fic_data["url"])
+
+        selected_urls = sorted(list(set(selected_urls)))
+
         if not selected_urls:
             return
 
         menu = QMenu()
         fic_count = len(selected_urls)
+
         fics_in_queue = [url for url in selected_urls if self.fics_in_memory.get(url, {}).get("is_in_reading_queue")]
 
         if len(fics_in_queue) < fic_count:
             add_to_queue_action = menu.addAction(f"🔖 Add {fic_count} Fic(s) to Reading Queue")
-
             if add_to_queue_action:
                 add_to_queue_action.triggered.connect(self._add_selected_to_queue)
 
         if len(fics_in_queue) > 0:
             remove_from_queue_action = menu.addAction(f"✖️ Remove {len(fics_in_queue)} Fic(s) from Reading Queue")
-
             if remove_from_queue_action:
                 remove_from_queue_action.triggered.connect(self._remove_selected_from_queue)
 
@@ -372,22 +361,17 @@ class MainWindow(QMainWindow):
             menu.exec(viewport.mapToGlobal(position))
 
     def _apply_bulk_changes(self, urls: List[str], changes: Dict[str, List[str] | str | None]) -> None:
-        """Applica le modifiche in blocco al database."""
-        logger.info(f"Applying bulk changes to {len(urls)} fics: {changes}")
+        logger.info(f"Applying bulk changes to {len(urls)} fics via Service.")
 
         new_status = changes["status"]
         if new_status and isinstance(new_status, str):
-            bulk_update_status(urls, new_status)
+            self.library_service.bulk_update_status(urls, new_status)
 
         if changes["add_tags"]:
-            tags_to_add = changes["add_tags"]
-            if isinstance(tags_to_add, list):
-                bulk_add_tags(urls, tags_to_add)
+            self.library_service.bulk_add_tags(urls, changes["add_tags"])
 
         if changes["remove_tags"]:
-            tags_to_remove = changes["remove_tags"]
-            if isinstance(tags_to_remove, list):
-                bulk_remove_tags(urls, tags_to_remove)
+            self.library_service.bulk_remove_tags(urls, changes["remove_tags"])
 
         self.ui_manager.update_tag_completer()
 
@@ -471,7 +455,7 @@ class MainWindow(QMainWindow):
             selection_model.blockSignals(True)
 
         for url in urls_to_modify:
-            fresh_fic_data = get_fic_by_url(url)
+            fresh_fic_data = self.library_service.get_fic_by_url(url)
             if fresh_fic_data:
                 row_index = self._find_row_by_url(url)
                 if row_index is not None:
@@ -543,115 +527,31 @@ class MainWindow(QMainWindow):
             self.bulk_edit_dialog.populate_remove_tags_list([])
             return
 
-        all_tags_sets = [{tag_name for _, tag_name in get_tags_for_fic(url)} for url in urls]
+        all_tags_sets = [{tag_name for _, tag_name in self.library_service.get_tags_for_fic(url)} for url in urls]
         common_tags = list(set.intersection(*all_tags_sets)) if all_tags_sets else []
         self.bulk_edit_dialog.populate_remove_tags_list(common_tags)
 
     def _get_selected_urls_from_table(self) -> List[str]:
+        selected_urls = []
+        proxy_indexes = self.fics_table.selectionModel().selectedRows()
 
-        selected_urls_set: set[str] = set()
+        for proxy_idx in proxy_indexes:
+            source_idx = self.proxy_model.mapToSource(proxy_idx)
+            fic = self.fic_model.get_fic_at(source_idx.row())
+            if fic and "url" in fic:
+                selected_urls.append(fic["url"])
 
-        for item in self.fics_table.selectedItems():
-            url_item = self.fics_table.item(item.row(), 0)
-
-            if url_item:
-                url = url_item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(url, str):
-                    selected_urls_set.add(url)
-
-        return sorted(list(selected_urls_set))
+        return sorted(list(set(selected_urls)))
 
     def _find_row_by_url(self, url: str) -> Optional[int]:
-        for row in range(self.fics_table.rowCount()):
-            item = self.fics_table.item(row, 0)
-            if item is not None:
-                assert item is not None
-                if item.data(Qt.ItemDataRole.UserRole) == url:
-                    return row
+        for i, fic in enumerate(self.fic_model._data):
+            if fic.get("url") == url:
+                return i
         return None
 
     def _populate_table_row(self, row_num: int, fic: Dict[str, Any]):
-        rating = fic["user_rating"] or 0
-        wc = fic["word_count"] or 0
-        icons = []
-        if fic.get("is_in_reading_queue"):
-            icons.append("🔖")
-        if fic.get("is_in_library"):
-            icons.append("📚")
 
-        if fic["is_complete"]:
-            icons.append("✅")
-        else:
-            icons.append("📖")
-
-        icon_str = " ".join(icons)
-        verified_icon = "🔹" if fic["status_verified"] else "🔸"
-        hits = fic["hits"] or 0
-        kudos = fic["kudos"] or 0
-        visits = fic["visit_count"] or 0
-        series_text = f"{fic['series_name']} (Part {fic['series_part']})" if fic["series_name"] else ""
-        match_score = fic.get("recommendation_score", 0.0)
-
-        items: Dict[str, QTableWidgetItem] = {
-            const.COLUMN_TITLE: QTableWidgetItem(f"{icon_str} {fic['title']}"),
-            const.COLUMN_AUTHOR: QTableWidgetItem(fic["author"]),
-            const.COLUMN_FANDOM: QTableWidgetItem(fic["fandoms"]),
-            const.COLUMN_CHAPTERS: QTableWidgetItem(fic["chapters"]),
-            const.COLUMN_DATE_UPDATED: QTableWidgetItem(fic["date_updated"]),
-            const.COLUMN_SERIES: QTableWidgetItem(series_text),
-            const.COLUMN_RATING: QTableWidgetItem(fic["rating"]),
-            const.COLUMN_STATUS: QTableWidgetItem(f"{verified_icon} {fic['status']}"),
-            const.COLUMN_CATEGORY: QTableWidgetItem(fic["category"]),
-            const.COLUMN_RELATIONSHIPS: QTableWidgetItem(fic["relationships"]),
-            const.COLUMN_CHARACTERS: QTableWidgetItem(fic["characters"]),
-            const.COLUMN_USER_TAGS: QTableWidgetItem(fic["user_tags"] or ""),
-            const.COLUMN_LAST_VISIT: QTableWidgetItem(fic["last_visit_date"] or ""),
-        }
-        items[const.COLUMN_MATCH_SCORE] = NumericTableWidgetItem(f"{match_score:.2f}")
-        items[const.COLUMN_MATCH_SCORE].setData(Qt.ItemDataRole.UserRole, match_score)
-        items[const.COLUMN_VISIT_COUNT] = NumericTableWidgetItem(f"{visits:,}")
-        items[const.COLUMN_VISIT_COUNT].setData(Qt.ItemDataRole.UserRole, visits)
-        items[const.COLUMN_WORDS] = NumericTableWidgetItem(f"{wc:,}")
-        items[const.COLUMN_WORDS].setData(Qt.ItemDataRole.UserRole, wc)
-
-        items[const.COLUMN_HITS] = NumericTableWidgetItem(f"{hits:,}")
-        items[const.COLUMN_HITS].setData(Qt.ItemDataRole.UserRole, hits)
-
-        items[const.COLUMN_KUDOS] = NumericTableWidgetItem(f"{kudos:,}")
-        items[const.COLUMN_KUDOS].setData(Qt.ItemDataRole.UserRole, kudos)
-
-        rating_item_for_sorting = NumericTableWidgetItem()
-        rating_item_for_sorting.setData(Qt.ItemDataRole.UserRole, rating)
-
-        text_color = self.status_text_colors.get(fic["status"], QColor("black"))
-
-        items[const.COLUMN_TITLE].setData(Qt.ItemDataRole.UserRole, fic["url"])
-
-        self.fics_table.setSortingEnabled(False)
-
-        for col_idx, key in enumerate(self.column_map):
-            if key == const.COLUMN_USER_RATING:
-
-                star_color = "#FFC107"
-                filled_stars_html = f'<font color="{star_color}">{"★" * rating}</font>'
-                empty_stars_text = "☆" * (5 - rating)
-
-                stars_html = filled_stars_html + empty_stars_text
-
-                rating_label = QLabel(stars_html)
-                rating_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                self.fics_table.setCellWidget(row_num, col_idx, rating_label)
-                self.fics_table.setItem(row_num, col_idx, rating_item_for_sorting)
-
-            elif key in items:
-                item = items[key]
-                item.setForeground(text_color)
-                if key == const.COLUMN_MATCH_SCORE:
-                    item.setToolTip("How well this fic matches your tastes based on your reading history.")
-                self.fics_table.setItem(row_num, col_idx, item)
-
-        self.fics_table.setSortingEnabled(True)
+        pass
 
     def closeEvent(self, event: Optional[QCloseEvent]) -> None:
         logger.info("Close event triggered. Shutting down active threads.")
@@ -734,7 +634,7 @@ class MainWindow(QMainWindow):
         all_authors: set[str] = set()
         all_tags: set[str] = set()
 
-        all_fics_in_db = get_filtered_fics(view_filter="all")
+        all_fics_in_db = self.library_service.get_all_fics(view_filter="all")
 
         for fic in all_fics_in_db:
             if fic.get("fandoms"):
@@ -856,7 +756,7 @@ class MainWindow(QMainWindow):
             self.sync_status_button.setText("🔄 Sync Status")
 
         if new_status != current_status:
-            update_fic_status(url, new_status, 1)
+            self.library_service.update_status(url, new_status, 1)
             old_fic_data = dict(fic_data)
 
             self.fics_in_memory[url]["status"] = new_status
@@ -917,27 +817,24 @@ class MainWindow(QMainWindow):
             self.worker_manager.start_mass_import(text.strip())
 
     def _update_fics_table(self, fics_to_display: Optional[List[Dict[str, Any]]] = None) -> None:
+        """
+        Aggiorna la tabella passando i nuovi dati al modello.
+        Molto più efficiente della vecchia versione.
+        """
         self._ignore_selection_change = True
-        previously_selected_url = self.selected_url
-        self.fics_table.setSortingEnabled(False)
-        self.fics_table.clearContents()
 
-        all_fics_raw = get_filtered_fics(view_filter=self.current_view_filter)
+        if fics_to_display is None:
 
-        all_fics_scored = self.analysis_engine.generate_recommendations(all_fics_raw)
-        self.fics_in_memory = {fic["url"]: fic for fic in all_fics_scored}
+            all_fics_raw = self.library_service.get_all_fics(view_filter=self.current_view_filter)
 
-        fics_to_render = fics_to_display if fics_to_display is not None else list(self.fics_in_memory.values())
+            fics_to_render = self.analysis_engine.generate_recommendations(all_fics_raw)
+        else:
+            fics_to_render = fics_to_display
 
-        self.fics_table.setRowCount(len(fics_to_render))
-        selected_row = -1
-        for row_num, fic in enumerate(fics_to_render):
-            self._populate_table_row(row_num, fic)
-            if previously_selected_url == fic["url"]:
-                selected_row = row_num
-        self.fics_table.setSortingEnabled(True)
-        if selected_row != -1:
-            self.fics_table.selectRow(selected_row)
+        self.fics_in_memory = {fic["url"]: fic for fic in fics_to_render}
+
+        self.fic_model.update_data(fics_to_render)
+
         self._ignore_selection_change = False
         self.ui_manager.update_status_bar()
         self.ui_manager.update_gamification_panel()
@@ -952,78 +849,83 @@ class MainWindow(QMainWindow):
     def _on_fic_selection_changed(self) -> None:
         if self._ignore_selection_change:
             return
-        selected_items = self.fics_table.selectedItems()
-        if not selected_items:
+
+        selected_indexes = self.fics_table.selectionModel().selectedRows()
+
+        if not selected_indexes:
             self._hide_details_panel()
             return
+
         central_widget = self.centralWidget()
-        if not central_widget:
+        if central_widget:
+            right_widget = central_widget.findChild(QWidget, "right_widget")
+            if right_widget:
+                right_widget.setVisible(True)
+
+        proxy_index = selected_indexes[0]
+        source_index = self.proxy_model.mapToSource(proxy_index)
+
+        data = self.fic_model.get_fic_at(source_index.row())
+
+        if not data:
             return
-        right_widget = central_widget.findChild(QWidget, "right_widget")
-        if right_widget:
-            right_widget.setVisible(True)
-        url_item = self.fics_table.item(selected_items[0].row(), 0)
-        if not url_item:
-            return
-        self.selected_url = url_item.data(Qt.ItemDataRole.UserRole)
-        if data := self.fics_in_memory.get(self.selected_url or ""):
-            kudos = data["kudos"] or 0
-            bookmarks = data["bookmarks"] or 0
-            comments = data["comments"] or 0
-            hits = data["hits"] or 0
-            word_count = data["word_count"] or 0
-            last_visit = data.get("last_visit_date")
-            visit_count = data.get("visit_count")
-            self.detail_title.setText(data["title"])
 
-            self.detail_author.setText(f"by {self.format_link(data['author'], 'author')}")
-            series_html = ""
-            history_html = ""
-            if last_visit:
-                history_html = f"<b>Your History:</b> Last visit on {last_visit} ({visit_count} total visits)<br>"
-            self.detail_info.setText(
-                f"{series_html}"
-                f"<b>Fandom:</b> {self.format_link(data['fandoms'], 'fandoms')}<br>"
-                f"<b>Published:</b> {data['date_published']} | <b>Updated:</b> {data['date_updated']}<br>"
-                f"<b>Rating:</b> {data['rating']} | <b>Language:</b> {data['language']}<br>"
-                f"<b>Words:</b> {word_count:,} | <b>Chapters:</b> {data['chapters']}<br>"
-                f"<b>AO3 Stats:</b> Kudos: {kudos:,} | Bookmarks: {bookmarks:,} | Comments: {comments:,} | Hits: {hits:,}<br>"  # noqa: E501
-                f"{history_html}"
-            )
-            if data["series_name"]:
-                series_link = f'<a href="series_name:{data["series_name"]}">{data["series_name"]}</a>'
-                series_html = f"Part {data['series_part']} of the series {series_link}<br>"
-            self.detail_info.setText(
-                f"{series_html}"
-                f"<b>Fandom:</b> {self.format_link(data['fandoms'], 'fandoms')}<br>"
-                f"<b>Published:</b> {data['date_published']} | <b>Updated:</b> {data['date_updated']}<br>"
-                f"<b>Rating:</b> {data['rating']} | <b>Language:</b> {data['language']}<br>"
-                f"<b>Words:</b> {word_count:,} | <b>Chapters:</b> {data['chapters']}<br>"
-                f"<b>Stats:</b> Kudos: {kudos:,} | Bookmarks: {bookmarks:,} | Comments: {comments:,} | Hits: {hits:,}"
-            )
-            self.detail_category.setText(f"<b>Category:</b> {self.format_link(data['category'], 'category')}")
-            self.detail_relationships.setText(
-                f"<b>Relationships:</b> {self.format_link(data['relationships'], 'relationships')}"
-            )
-            self.detail_characters.setText(f"<b>Characters:</b> {self.format_link(data['characters'], 'characters')}")
-            self.detail_tags.setText(f"<b>Tags:</b> {self.format_link(data['tags'], 'tags')}")
+        self.selected_url = data["url"]
 
-            user_tags_html = self.format_link(data.get("user_tags"), const.SEARCH_USER_TAGS)
-            self.detail_user_tags.setText(user_tags_html if user_tags_html else "<i>No tags assigned.</i>")
+        kudos = data.get("kudos", 0) or 0
+        bookmarks = data.get("bookmarks", 0) or 0
+        comments = data.get("comments", 0) or 0
+        hits = data.get("hits", 0) or 0
+        word_count = data.get("word_count", 0) or 0
+        last_visit = data.get("last_visit_date")
+        visit_count = data.get("visit_count")
 
-            self.detail_summary.setText(data["summary"])
-            self.detail_notes.setText(data["user_notes"])
-            is_in_library = data.get("is_in_library", False)
-            self.add_to_library_button.setVisible(not is_in_library)
+        self.detail_title.setText(data.get("title", "Unknown Title"))
+        self.detail_author.setText(f"by {self.format_link(data.get('author'), 'author')}")
 
-            rating = data["user_rating"] or 0
-            for i, btn in enumerate(self.rating_buttons):
-                if i < rating:
-                    btn.setText("★")
-                    btn.setStyleSheet("font-size: 18px; border: none; color: #FFC107;")
-                else:
-                    btn.setText("☆")
-                    btn.setStyleSheet("font-size: 18px; border: none;")
+        series_html = ""
+        if data.get("series_name"):
+            series_link = f'<a href="series_name:{data["series_name"]}">{data["series_name"]}</a>'
+            series_html = f"Part {data.get('series_part', '?')} of the series {series_link}<br>"
+
+        history_html = ""
+        if last_visit:
+            history_html = f"<b>Your History:</b> Last visit on {last_visit} ({visit_count} total visits)<br>"
+
+        self.detail_info.setText(
+            f"{series_html}"
+            f"<b>Fandom:</b> {self.format_link(data.get('fandoms'), 'fandoms')}<br>"
+            f"<b>Published:</b> {data.get('date_published', '-')} | <b>Updated:</b> {data.get('date_updated', '-')}<br>"
+            f"<b>Rating:</b> {data.get('rating', '-')} | <b>Language:</b> {data.get('language', '-')}<br>"
+            f"<b>Words:</b> {word_count:,} | <b>Chapters:</b> {data.get('chapters', '?')}<br>"
+            f"<b>AO3 Stats:</b> Kudos: {kudos:,} | Bookmarks: {bookmarks:,} | Comments: {comments:,} | Hits: {hits:,}<br>"  # noqa: E501
+            f"{history_html}"
+        )
+
+        self.detail_category.setText(f"<b>Category:</b> {self.format_link(data.get('category'), 'category')}")
+        self.detail_relationships.setText(
+            f"<b>Relationships:</b> {self.format_link(data.get('relationships'), 'relationships')}"
+        )
+        self.detail_characters.setText(f"<b>Characters:</b> {self.format_link(data.get('characters'), 'characters')}")
+        self.detail_tags.setText(f"<b>Tags:</b> {self.format_link(data.get('tags'), 'tags')}")
+
+        user_tags_html = self.format_link(data.get("user_tags"), const.SEARCH_USER_TAGS)
+        self.detail_user_tags.setText(user_tags_html if user_tags_html else "<i>No tags assigned.</i>")
+
+        self.detail_summary.setText(data.get("summary", ""))
+        self.detail_notes.setText(data.get("user_notes", ""))
+
+        is_in_library = data.get("is_in_library", False)
+        self.add_to_library_button.setVisible(not is_in_library)
+
+        rating = data.get("user_rating", 0) or 0
+        for i, btn in enumerate(self.rating_buttons):
+            if i < rating:
+                btn.setText("★")
+                btn.setStyleSheet("font-size: 18px; border: none; color: #FFC107;")
+            else:
+                btn.setText("☆")
+                btn.setStyleSheet("font-size: 18px; border: none;")
 
     def _add_tag_to_fic(self) -> None:
         if not self.selected_url:
@@ -1032,12 +934,18 @@ class MainWindow(QMainWindow):
         if not tag_name:
             return
 
-        tag_id = get_or_create_tag(tag_name)
+        tag_id = self.library_service.get_or_create_tag(tag_name)
         if tag_id:
-            assign_tag_to_fic(self.selected_url, tag_id)
+            self.library_service.assign_tag_to_fic(self.selected_url, tag_id)
             self.tag_input.clear()
 
-            self._update_current_selection_details()
+            fresh_fic_data = self.library_service.get_fic_by_url(self.selected_url)
+
+            if fresh_fic_data:
+
+                self._update_single_fic_row(fresh_fic_data)
+
+                self._on_fic_selection_changed()
 
             self.ui_manager.update_tag_completer()
             self.ui_manager.update_search_completer()
@@ -1048,7 +956,7 @@ class MainWindow(QMainWindow):
         current_notes_in_memory = self.fics_in_memory[self.selected_url]["user_notes"]
         new_notes = self.detail_notes.toPlainText()
         if new_notes != current_notes_in_memory:
-            update_fic_notes(self.selected_url, new_notes)
+            self.library_service.update_notes(self.selected_url, new_notes)
             self._update_current_selection_details()
             status_bar = self.statusBar()
             if status_bar:
@@ -1062,15 +970,15 @@ class MainWindow(QMainWindow):
 
         current_rating = old_fic_data.get("user_rating") or 0
         new_rating = rating if rating != current_rating else 0
-        update_fic_rating(self.selected_url, new_rating)
+        self.library_service.update_rating(self.selected_url, new_rating)
 
-        new_fic_data = get_fic_by_url(self.selected_url)
+        new_fic_data = self.library_service.get_fic_by_url(self.selected_url)
         if new_fic_data:
             self.analysis_engine.update_fic(old_fic_data, new_fic_data)
 
         self._update_current_selection_details()
 
-        fresh_fic_data = get_fic_by_url(self.selected_url)
+        fresh_fic_data = self.library_service.get_fic_by_url(self.selected_url)
         if fresh_fic_data:
             if check_for_achievements(
                 calculate_base_stats(),
@@ -1131,21 +1039,24 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(dict)
     def _update_single_fic_row(self, fic_data: Dict[str, Any]) -> None:
-
         url = fic_data["url"]
-        logger.debug(f"Aggiornamento in tempo reale per la riga con URL: {url}")
 
         row = self._find_row_by_url(url)
         if row is not None:
 
-            self.fics_in_memory[url] = fic_data
-            self._populate_table_row(row, fic_data)
+            self.fic_model._data[row] = fic_data
+            self.fics_in_memory[url] = fic_data  # Legacy cache
+
+            top_left = self.fic_model.index(row, 0)
+            bottom_right = self.fic_model.index(row, self.fic_model.columnCount() - 1)
+
+            self.fic_model.dataChanged.emit(top_left, bottom_right)
 
     def _on_auto_sync_finished(self, url: str):
         """
         When an auto-sync finishes, get the final fic state and update the engine one last time.
         """
-        final_fic_data = get_fic_by_url(url)
+        final_fic_data = self.library_service.get_fic_by_url(url)
 
         old_fic_data = self.fics_in_memory.get(url)
         if final_fic_data and old_fic_data:
@@ -1155,30 +1066,24 @@ class MainWindow(QMainWindow):
         if not self.selected_url:
             return
 
-        old_fic_data = dict(self.fics_in_memory[self.selected_url])
+        self.library_service.update_status(self.selected_url, new_status, verified=bool(verified))
 
-        update_fic_status(self.selected_url, new_status, verified)
+        fresh_fic_data = self.library_service.get_fic_by_url(self.selected_url)
 
-        new_fic_data = get_fic_by_url(self.selected_url)
-        if new_fic_data:
-            self.analysis_engine.update_fic(old_fic_data, new_fic_data)
-
-        fresh_fic_data = get_fic_by_url(self.selected_url)
         if fresh_fic_data:
-            self.analysis_engine.update_fic(old_fic_data, fresh_fic_data)
 
-            self.fics_in_memory[self.selected_url] = fresh_fic_data
-            row_to_update = self._find_row_by_url(self.selected_url)
-            if row_to_update is not None:
-                self._populate_table_row(row_to_update, fresh_fic_data)
+            self.analysis_engine.add_fic(fresh_fic_data)
+
+            self._update_single_fic_row(fresh_fic_data)
 
             if check_for_achievements(
-                calculate_base_stats(),
-                get_data_for_charts("lette"),
-                count_verified_statuses(),
-                newly_modified_fic=old_fic_data,  # noqa: E501
+                self.library_service.calculate_stats(),
+                self.library_service.get_data_for_charts("lette"),
+                self.library_service.count_verified_stats(),
+                newly_modified_fic=fresh_fic_data,
             ):
                 self.update_notification_indicator()
+
             if new_status == const.STATUS_READ:
                 QMessageBox.information(
                     self, "Well Done!", "Now that you've read it, consider leaving a comment for the author!"
@@ -1280,7 +1185,7 @@ class MainWindow(QMainWindow):
 
         status_bar = self.statusBar()
 
-        success, reason = add_fic(data)
+        success, reason = self.library_service.add_fic(data)
 
         if success:
             logger.info(f"Successfully added '{data['title']}' to the database via worker.")
@@ -1289,9 +1194,9 @@ class MainWindow(QMainWindow):
             self.search_input.clear()
             self.status_filter_combo.setCurrentIndex(0)
 
-            new_fic_data = get_fic_by_url(data["url"])
+            new_fic_data = self.library_service.get_fic_by_url(data["url"])
             if new_fic_data:
-                self.analysis_engine.add_fic(new_fic_data)
+                self.analysis_engine.self.library_service.add_fic(new_fic_data)
 
                 if not new_fic_data.get("from_history"):
                     self.worker_manager.start_auto_sync_for_fic(new_fic_data)
@@ -1302,7 +1207,7 @@ class MainWindow(QMainWindow):
         elif reason == "exists":
             logger.warning(f"Worker tried to add a fic that is already in the database: {data['url']}")
 
-            existing_fic = get_fic_by_url(data["url"])
+            existing_fic = self.library_service.get_fic_by_url(data["url"])
             if existing_fic and not existing_fic.get("is_in_library"):
 
                 logger.info("Fic exists and is not in library. Promoting it.")
@@ -1340,20 +1245,18 @@ class MainWindow(QMainWindow):
     def _on_new_fic_from_worker(self, fic_data: Dict[str, Any]) -> None:
         """
         Gestore unificato per ogni nuova opera aggiunta da un worker di importazione di massa.
-        Aggiorna la UI, il motore di analisi e avvia l'auto-sync se necessario.
         """
-
         logger.debug(f"MainWindow received fic_data: {fic_data}")
 
         self._update_fics_table()
+
         self.analysis_engine.add_fic(fic_data)
 
         if not fic_data.get("from_history"):
-
             logger.debug("fic_data does not have 'from_history' flag. Starting auto-sync.")
+
             self.worker_manager.start_auto_sync_for_fic(fic_data)
         else:
-
             logger.debug("fic_data has 'from_history' flag. Skipping auto-sync.")
 
     def _on_delete_fics_clicked(self, urls_to_delete: List[str]) -> None:
@@ -1384,7 +1287,7 @@ class MainWindow(QMainWindow):
                 fic_to_delete_data = self.fics_in_memory.get(url)
                 if fic_to_delete_data:
                     self.analysis_engine.remove_fic(dict(fic_to_delete_data))
-                delete_fic(url)
+                self.library_service.delete_fic(url)
             self.search_input.clear()
             self.status_filter_combo.setCurrentIndex(0)
             self._hide_details_panel()
@@ -1431,7 +1334,7 @@ class MainWindow(QMainWindow):
         if not self.selected_url:
             return
 
-        all_fic_tags = get_tags_for_fic(self.selected_url)
+        all_fic_tags = self.library_service.get_tags_for_fic(self.selected_url)
         if not all_fic_tags:
             return
 
@@ -1458,11 +1361,11 @@ class MainWindow(QMainWindow):
             self._hide_details_panel()
             return
 
-        fresh_fic_data = get_fic_by_url(self.selected_url)
+        fresh_fic_data = self.library_service.get_fic_by_url(self.selected_url)
         if not fresh_fic_data:
 
             self._hide_details_panel()
-            self._update_fics_table(get_filtered_fics())
+            self._update_fics_table(self.library_service.get_all_fics())
             return
 
         self.fics_in_memory[self.selected_url] = fresh_fic_data
@@ -1588,7 +1491,7 @@ class MainWindow(QMainWindow):
         if not urls:
             return
 
-        add_fics_to_queue(urls)
+        self.library_service.add_to_queue(urls)
         self._refresh_rows_by_url(urls)
 
     def _remove_selected_from_queue(self) -> None:
@@ -1597,7 +1500,7 @@ class MainWindow(QMainWindow):
         if not urls:
             return
 
-        remove_fics_from_queue(urls)
+        self.library_service.remove_from_queue(urls)
         self._refresh_rows_by_url(urls)
 
     def _refresh_rows_by_url(self, urls: List[str]) -> None:
@@ -1607,7 +1510,7 @@ class MainWindow(QMainWindow):
         """
         for url in urls:
 
-            fresh_fic_data = get_fic_by_url(url)
+            fresh_fic_data = self.library_service.get_fic_by_url(url)
             if not fresh_fic_data:
                 continue
 
@@ -1653,18 +1556,25 @@ class MainWindow(QMainWindow):
     @pyqtSlot(list)
     def _handle_add_to_queue_request(self, urls: List[str]) -> None:
         """Aggiunge una lista di URL alla coda e aggiorna la UI."""
-        add_fics_to_queue(urls)
+        self.library_service.add_to_queue(urls)
         self._refresh_rows_by_url(urls)
 
     @pyqtSlot(str)
     def _select_fic_from_url(self, url: str) -> None:
-        """Selects a fic in the main table based on a URL received from a child dialog."""
-        row_index = self._find_row_by_url(url)
-        if row_index is not None:
-            self.fics_table.selectRow(row_index)
-            item = self.fics_table.item(row_index, 0)
-            if item:
-                self.fics_table.scrollToItem(item)
+        """Seleziona una fic nella tabella gestendo la conversione tra Modello e Vista."""
+
+        source_row = self._find_row_by_url(url)
+
+        if source_row is not None:
+
+            source_index = self.fic_model.index(source_row, 0)
+
+            proxy_index = self.proxy_model.mapFromSource(source_index)
+
+            if proxy_index.isValid():
+
+                self.fics_table.selectRow(proxy_index.row())
+                self.fics_table.scrollTo(proxy_index)
 
     def _open_filter_builder(self) -> None:
         """Apre il Costruttore di Filtri, passando i dati per i suggerimenti."""

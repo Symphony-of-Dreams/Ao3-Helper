@@ -1,7 +1,7 @@
 from functools import partial
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QStringListModel, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QSortFilterProxyModel, QStringListModel, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -18,21 +18,15 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
-    QTableWidget,
+    QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from ao3_helper import constants as const
-from ao3_helper.core.database import (
-    add_fics_to_queue,
-    calculate_base_stats,
-    count_verified_statuses,
-    get_all_user_tags,
-    get_filtered_fics,
-)
 from ao3_helper.ui.dialogs.recommendation_center_dialog import RecommendationCenterDialog
+from ao3_helper.ui.view_models import FicTableModel
 from ao3_helper.workers.gamification import calculate_xp_level
 
 
@@ -55,7 +49,9 @@ class UIManager:
         self.main_window.notifications_button.clicked.connect(self.main_window._open_notifications_window)
         self.main_window.refresh_button.clicked.connect(self.main_window.worker_manager.start_update_check)
         self.main_window.achievements_button.clicked.connect(self.main_window._open_achievements_window)
-        self.main_window.fics_table.itemSelectionChanged.connect(self.main_window._on_fic_selection_changed)
+        self.main_window.fics_table.selectionModel().selectionChanged.connect(
+            lambda selected, deselected: self.main_window._on_fic_selection_changed()
+        )  # noqa: E501
         self.main_window.fics_table.customContextMenuRequested.connect(self.main_window._open_fics_table_context_menu)
         self.main_window.detail_close_button.clicked.connect(self.main_window._hide_details_panel)
         self.main_window.detail_notes.editingFinished.connect(self.main_window._save_notes)
@@ -149,9 +145,18 @@ class UIManager:
 
     def create_main_widgets(self) -> None:
         self.main_window.column_map = const.COLUMN_MAP
-        self.main_window.fics_table = QTableWidget()
-        self.main_window.fics_table.setColumnCount(len(self.main_window.column_map))
-        self.main_window.fics_table.setHorizontalHeaderLabels(self.main_window.column_map)
+
+        self.main_window.fics_table = QTableView()
+
+        self.main_window.fic_model = FicTableModel()
+
+        self.main_window.proxy_model = QSortFilterProxyModel()
+        self.main_window.proxy_model.setSourceModel(self.main_window.fic_model)
+        self.main_window.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.main_window.proxy_model.setSortRole(Qt.ItemDataRole.UserRole)
+
+        self.main_window.fics_table.setModel(self.main_window.proxy_model)
+
         self.main_window.version_label = QLabel(f"|| Version {const.APP_VERSION}")
         self.main_window.fic_count_label = QLabel("Total Fics: -")
         self.main_window.word_count_label = QLabel("Words Read: -")
@@ -415,15 +420,40 @@ class UIManager:
         return panel
 
     def setup_fics_table(self) -> None:
-        self.main_window.fics_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.main_window.fics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.main_window.fics_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+        self.main_window.fics_table.setAlternatingRowColors(True)
         self.main_window.fics_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.main_window.fics_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.main_window.fics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.main_window.fics_table.setStyleSheet(
+            """
+            QTableView {
+                background-color: #2b2b2b;           /* Grigio Scuro (Base) */
+                alternate-background-color: #383838; /* Grigio Leggermente più chiaro (Alternato) */
+                color: #e0e0e0;                      /* Testo chiaro di base */
+                gridline-color: #444444;             /* Linee griglia sottili */
+                selection-background-color: #007acc; /* Blu per la selezione */
+                selection-color: white;
+            }
+            QHeaderView::section {
+                background-color: #3c3c3c;
+                color: white;
+                border: 1px solid #555;
+                padding: 4px;
+            }
+        """
+        )
+
+        header = self.main_window.fics_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setStretchLastSection(False)
+
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+
         self.main_window.fics_table.setSortingEnabled(True)
-        self.main_window.fics_table.horizontalHeader().setSectionsMovable(True)
         self.main_window.fics_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        columns_to_hide_by_default = [
+        columns_to_hide = [
             const.COLUMN_SERIES,
             const.COLUMN_HITS,
             const.COLUMN_KUDOS,
@@ -436,12 +466,12 @@ class UIManager:
             const.COLUMN_VISIT_COUNT,
         ]
 
-        for column_name in columns_to_hide_by_default:
+        for col_name in columns_to_hide:
             try:
-                column_index = self.main_window.column_map.index(column_name)
-                self.main_window.fics_table.setColumnHidden(column_index, True)
+                idx = const.COLUMN_MAP.index(col_name)
+                self.main_window.fics_table.setColumnHidden(idx, True)
             except ValueError:
-                self.main_window.logger.warning(f"Column '{column_name}' not found in COLUMN_MAP. Cannot hide.")
+                pass
 
     def create_details_panel(self) -> QWidget:
         right_widget = QWidget()
@@ -617,12 +647,13 @@ class UIManager:
         return view_filter_layout
 
     def update_status_bar(self) -> None:
-        stats = calculate_base_stats()
+        stats = self.main_window.library_service.calculate_stats()
         self.main_window.fic_count_label.setText(f"Total Fics: {stats.get('total_fics', 0)}")
         self.main_window.word_count_label.setText(f"Words Read: {stats.get('total_words_read', 0):,}")
 
     def update_gamification_panel(self) -> None:
-        stats, verified_stats = calculate_base_stats(), count_verified_statuses()
+        stats = self.main_window.library_service.calculate_stats()
+        verified_stats = self.main_window.library_service.count_verified_stats()
         words_read = stats.get("total_words_read", 0)
         level_info = calculate_xp_level(words_read)
         self.main_window.level_label.setText(f"<b>LVL: {level_info['level']}</b>")
@@ -695,15 +726,20 @@ class UIManager:
             )
 
         if hasattr(self.main_window, "fics_table"):
-            self.main_window._update_fics_table(get_filtered_fics(view_filter=self.main_window.current_view_filter))
+
+            fics = self.main_window.library_service.get_all_fics(view_filter=self.main_window.current_view_filter)
+            self.main_window._update_fics_table(fics)
 
     def update_tag_completer(self) -> None:
         """
-        Recupera tutti i tag utente dal database e aggiorna il modello
+        Recupera tutti i tag utente tramite il Service e aggiorna il modello
         del QCompleter per i suggerimenti di tag.
         """
-        all_tags = get_all_user_tags()
+
+        all_tags = self.main_window.library_service.get_all_user_tags()
+
         tag_names = [tag_name for tag_id, tag_name in all_tags]
+
         self.main_window.tag_completer_model.setStringList(tag_names)
 
     def update_recommendations_panel(self) -> None:
@@ -786,7 +822,7 @@ class UIManager:
     @pyqtSlot(list)
     def handle_add_to_queue_request(self, urls: List[str]) -> None:
         """Aggiunge una lista di URL alla coda e aggiorna la UI."""
-        add_fics_to_queue(urls)
+        self.main_window.library_service.add_to_queue(urls)
         self.main_window._refresh_rows_by_url(urls)
 
     def display_current_recommendation(self) -> None:

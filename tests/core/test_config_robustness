@@ -1,0 +1,58 @@
+import os
+
+import pytest
+
+from ao3_helper import constants as const
+from ao3_helper.core.config_manager import ConfigManager
+
+
+def test_config_load_corrupted_file(tmp_path):
+    """
+    Verifica comportamento con un file config.ini contenente spazzatura.
+    Dovrebbe rigenerare i default o caricare parzialmente senza crashare.
+    """
+    bad_config = tmp_path / "bad_config.ini"
+    
+    with open(bad_config, "w") as f:
+        f.write("!!! QUESTO NON E' UN FILE INI VALIDO !!!\n[Section]SenzaChiave")
+
+    
+    
+    
+
+    try:
+        cm = ConfigManager(filename=str(bad_config))
+
+        
+        val = cm.get(const.CONFIG_SECTION_CREDS, const.CONFIG_KEY_USERNAME, fallback="fallback_user")
+        assert val == "fallback_user" or val == const.CONFIG_DEFAULT_USER
+
+    except Exception as e:
+        pytest.fail(f"ConfigManager è crashato su file corrotto: {e}")
+
+
+def test_config_permission_error(tmp_path):
+    """
+    Verifica che save_config non faccia crashare l'app se non può scrivere su disco
+    (es. permessi negati).
+    """
+    protected_config = tmp_path / "readonly.ini"
+    with open(protected_config, "w") as f:
+        f.write("")
+
+    
+    os.chmod(protected_config, 0o444)
+
+    cm = ConfigManager(filename=str(protected_config))
+
+    try:
+        
+        cm.set("Test", "Key", "Value")
+        cm.save_config()  
+    except Exception as e:
+        
+        
+        pytest.fail(f"save_config è crashato su file sola lettura: {e}")
+
+    
+    os.chmod(protected_config, 0o777)

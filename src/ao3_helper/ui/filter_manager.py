@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Dict
 from PyQt6.QtCore import QObject, pyqtSlot
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
-from ao3_helper.core.database import get_all_filters, get_filtered_fics, save_filter
 from ao3_helper.logger_setup import logger
 from ao3_helper.ui.dialogs.filter_builder_dialog import FilterBuilderDialog
 
@@ -27,7 +26,7 @@ class FilterManager(QObject):
         self.main_window.saved_filters_combo.clear()
         self.main_window.saved_filters_combo.addItem("Saved Filters...")
 
-        filters = get_all_filters()
+        filters = self.main_window.library_service.get_saved_filters()
         for f in filters:
             self.main_window.saved_filters_combo.addItem(f["name"], userData=f)
 
@@ -72,7 +71,9 @@ class FilterManager(QObject):
             else:
                 filters["conditions"][field_key] = search_text
 
-        fics_found = get_filtered_fics(view_filter=self.main_window.current_view_filter, filters=filters)
+        fics_found = self.main_window.library_service.get_all_fics(
+            view_filter=self.main_window.current_view_filter, filters=filters
+        )
         self.main_window._update_fics_table(fics_found)
 
     @pyqtSlot()
@@ -155,7 +156,7 @@ class FilterManager(QObject):
         if ok and filter_name:
             try:
 
-                save_filter(filter_name, json.dumps(filters))
+                self.main_window.library_service.save_filter(filter_name, json.dumps(filters))
                 QMessageBox.information(self.main_window, "Success", f"Filter '{filter_name}' saved.")
                 self.load()
             except Exception:
@@ -255,7 +256,7 @@ class FilterManager(QObject):
             filter_name, ok = QInputDialog.getText(self.main_window, "Save Filter", "Enter a name for this filter:")
             if ok and filter_name:
                 try:
-                    save_filter(filter_name, json.dumps(filters))
+                    self.main_window.library_service.save_filter(filter_name, json.dumps(filters))
                     self.load()
                 except Exception:
                     QMessageBox.warning(self.main_window, "Error", f"A filter named '{filter_name}' already exists.")
@@ -265,7 +266,9 @@ class FilterManager(QObject):
 
         self.clear_search()
 
-        fics_found = get_filtered_fics(view_filter=self.main_window.current_view_filter, filters=filters)
+        fics_found = self.main_window.library_service.get_all_fics(
+            view_filter=self.main_window.current_view_filter, filters=filters
+        )
         self.main_window._update_fics_table(fics_found)
 
         self.main_window.search_input.blockSignals(True)

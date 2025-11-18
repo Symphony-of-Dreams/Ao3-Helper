@@ -1,4 +1,4 @@
-from peewee import SqliteDatabase
+from playhouse.sqlite_ext import SqliteExtDatabase
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ao3_helper import constants as const
@@ -25,7 +25,17 @@ class App(QApplication):
 
             db_path = get_db_path_for_user(username)
             logger.info(f"Loading profile for user: '{username if username else 'guest'}'. DB Path: {db_path}")
-            database_instance = SqliteDatabase(db_path)
+            database_instance = SqliteExtDatabase(
+                db_path,
+                pragmas={
+                    "journal_mode": "WAL",
+                    "cache_size": -1024 * 64,
+                    "foreign_keys": 1,
+                    "ignore_check_constraints": 0,
+                    "synchronous": 0,
+                },
+                timeout=30,
+            )
             db.initialize(database_instance)
 
             run_database_migrations(db_path)

@@ -59,16 +59,32 @@ class AnalysisEngine:
 
         multiplier = 1 if operation == "add" else -1
 
-        if fic_data.get("author"):
-            authors = [a.strip() for a in fic_data["author"].split(",") if a.strip()]
-            for author_name in authors:
-                self.author_scores[author_name]["tws"] += author_score * multiplier
-                self.author_scores[author_name]["fic_count"] += 1 * multiplier
+        raw_author = fic_data.get("author")
+        authors = []
+
+        if isinstance(raw_author, list):
+            authors = raw_author
+        elif isinstance(raw_author, str) and raw_author:
+            authors = [a.strip() for a in raw_author.split(",") if a.strip()]
+
+        for author_name in authors:
+            self.author_scores[author_name]["tws"] += author_score * multiplier
+            self.author_scores[author_name]["fic_count"] += 1 * multiplier
 
         for scores_dict, key in self.entity_map:
-            if fic_data.get(key):
-                items = [item.strip() for item in fic_data[key].split(",") if item.strip()]
-                for item_name in items:
+            raw_val = fic_data.get(key)
+            items = []
+
+            if isinstance(raw_val, list):
+
+                items = raw_val
+            elif isinstance(raw_val, str) and raw_val:
+
+                items = [item.strip() for item in raw_val.split(",") if item.strip()]
+
+            for item_name in items:
+
+                if item_name:
                     scores_dict[item_name]["tws"] += entity_score * multiplier
                     scores_dict[item_name]["fic_count"] += 1 * multiplier
 

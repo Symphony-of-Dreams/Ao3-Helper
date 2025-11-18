@@ -47,14 +47,14 @@ def test_build_hybrid_query_logic(mocker, mock_user_profile):
     """
 
     mocker.patch(
-        "query_builder.random.choices",
+        "ao3_helper.core.query_builder.random.choices",
         side_effect=[
             ["Fandom A (Movie)"],
             ["A/B"],
             ["Fluff", "Angst", "Slow Burn", "Hurt/Comfort", "Coffee Shops"],
         ],
     )
-    mocker.patch("query_builder.random.randint", return_value=2)
+    mocker.patch("ao3_helper.core.query_builder.random.randint", return_value=2)
 
     search_params = {"strategy": "safe_bet"}
 
@@ -81,7 +81,7 @@ def test_author_recs_worker_logic(mocker, mock_user_profile):
             return [301]
         return []
 
-    mocker.patch("workers.ao3_client.get_random_bookmarks_from_author", side_effect=mock_get_bookmarks)
+    mocker.patch("ao3_helper.workers.workers.ao3_client.get_random_bookmarks_from_author", side_effect=mock_get_bookmarks)
 
     mock_fics_data = {
         "https://archiveofourown.org/works/101": {
@@ -112,9 +112,9 @@ def test_author_recs_worker_logic(mocker, mock_user_profile):
         fic["tags"] = f"TWS_BAIT_{fic.get('tws_bait', 0)}"
         return fic
 
-    mocker.patch("workers.ao3_client.fetch_fic_data", side_effect=mock_fetch_data)
+    mocker.patch("ao3_helper.workers.workers.ao3_client.fetch_fic_data", side_effect=mock_fetch_data)
 
-    mocker.patch("workers.get_existing_urls", return_value={"https://archiveofourown.org/works/301"})
+    mocker.patch("ao3_helper.workers.workers.get_existing_urls", return_value={"https://archiveofourown.org/works/301"})
 
     engine = AnalysisEngine()
 
@@ -128,7 +128,7 @@ def test_author_recs_worker_logic(mocker, mock_user_profile):
     engine.tag_scores["TWS_BAIT_50"]["tws"] = 50
 
     mocker.patch(
-        "workers.random.choices",
+        "ao3_helper.workers.workers.random.choices",
         side_effect=[
             ["TopAuthor1"],
             ["TopAuthor2"],

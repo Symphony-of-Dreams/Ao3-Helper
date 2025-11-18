@@ -13,6 +13,11 @@ def set_password(username: str, password: str) -> None:
     if not username:
         logger.warning("Attempted to set a password with no associated username.")
         return
+
+    if not password:
+        delete_password(username)
+        return
+
     try:
         keyring.set_password(SERVICE_NAME, username, password)
         logger.info(f"Password for user '{username}' securely stored in the system keyring.")

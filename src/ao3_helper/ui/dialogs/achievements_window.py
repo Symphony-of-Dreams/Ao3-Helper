@@ -62,13 +62,13 @@ class AchievementsWindow(QDialog):
         widget.setToolTip(tooltip_text)
 
         icon_label = QLabel(info["icon"])
-        icon_label.setStyleSheet("font-size: 32px; border: none;")
+        icon_label.setObjectName("icon_label")
 
         name_label = QLabel(f"<b>{info['name']}</b>")
-        name_label.setStyleSheet("border: none;")
+        name_label.setObjectName("name_label")
 
         date_label = QLabel(f"<i>{unlock_date}</i>" if is_unlocked else "")
-        date_label.setStyleSheet("border: none; font-size: 9px;")
+        date_label.setObjectName("date_label")
 
         if not is_unlocked:
             widget.setEnabled(False)

@@ -1,5 +1,6 @@
 import random
 import time
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple, cast
 
 import AO3
@@ -90,11 +91,22 @@ class BaseImportWorker(QObject):
             fic_url = f"https://archiveofourown.org/works/{work_id}"
 
             try:
-                data = ao3_client.fetch_fic_data(fic_url)
-                if data:
-                    success, reason = add_fic(data)
+
+                dto = ao3_client.fetch_fic_data(fic_url)
+
+                if dto:
+
+                    success, reason = add_fic(dto)
+
                     if success:
-                        self.new_fic_added.emit(data)
+
+                        legacy_data = asdict(dto)
+
+                        legacy_data["author"] = ", ".join(dto.authors)
+                        legacy_data["fandoms"] = ", ".join(dto.fandoms)
+                        legacy_data["tags"] = ", ".join(dto.tags)
+
+                        self.new_fic_added.emit(legacy_data)
 
                     elif reason == "exists":
                         existing_fic = get_fic_by_url(fic_url)
@@ -105,8 +117,6 @@ class BaseImportWorker(QObject):
                             self.fic_promoted.emit(existing_fic)
                         else:
                             logger.debug(f"Skipping existing and already-in-library fic: {fic_url}")
-
-                time.sleep(const.DEFAULT_REQUEST_DELAY)
 
             except Exception:
                 logger.exception(f"An error occurred while importing work ID {work_id}")
@@ -130,18 +140,32 @@ class AddFicWorker(QObject):
     def run(self):
         logger.info(f"AddFicWorker started for URL: {self.url} (Authenticated: {self.use_auth_fallback})")
         try:
-            data = ao3_client.fetch_fic_data(self.url, use_auth=self.use_auth_fallback)
 
-            if data:
-                self.finished.emit(data)
+            fic_dto = ao3_client.fetch_fic_data(self.url, use_auth=self.use_auth_fallback)
+
+            if fic_dto:
+
+                legacy_data = asdict(fic_dto)
+
+                legacy_data["author"] = ", ".join(fic_dto.authors)
+                legacy_data["fandoms"] = ", ".join(fic_dto.fandoms)
+                legacy_data["tags"] = ", ".join(fic_dto.tags)
+                legacy_data["relationships"] = ", ".join(fic_dto.relationships)
+                legacy_data["characters"] = ", ".join(fic_dto.characters)
+                legacy_data["category"] = ", ".join(fic_dto.categories)
+
+                total_exp = str(fic_dto.expected_chapters) if fic_dto.expected_chapters else "?"
+                legacy_data["chapters"] = f"{fic_dto.chapter_count}/{total_exp}"
+
+                legacy_data["source"] = "manual"
+
+                self.finished.emit(legacy_data)
             else:
 
                 if not self.use_auth_fallback:
                     self.private_fic_detected.emit(self.url)
-
                     self.finished.emit(None)
                 else:
-
                     self.error.emit("Could not retrieve data. The work might be deleted or the URL is incorrect.")
         except Exception as e:
             logger.exception(f"Exception in AddFicWorker for URL {self.url}")
@@ -154,19 +178,29 @@ class UpdateCheckWorker(QObject):
     new_notification = pyqtSignal(str, str)
 
     def run(self) -> None:
-
         fics_to_check = get_fics_to_update()
         logger.info(f"Starting update check for {len(fics_to_check)} incomplete fics.")
+
         for i, fic in enumerate(fics_to_check):
             try:
-                data = ao3_client.fetch_fic_data(fic["url"])
-                if data and data["word_count"] > fic["word_count"]:
-                    update_fic_data(fic["url"], data)
-                    self.new_notification.emit(f"New update for '{data['title']}'!", fic["url"])
+
+                dto = ao3_client.fetch_fic_data(fic["url"])
+
+                if dto and dto.word_count > fic["word_count"]:
+
+                    legacy_data = asdict(dto)
+                    legacy_data["is_complete"] = dto.is_complete
+
+                    update_fic_data(fic["url"], legacy_data)
+
+                    self.new_notification.emit(f"New update for '{dto.title}'!", fic["url"])
+
                 self.progress.emit(i + 1, len(fics_to_check))
                 time.sleep(const.SYNC_REQUEST_DELAY)
+
             except Exception as e:
                 logger.error(f"Error checking for updates on {fic['url']}: {e}")
+
         logger.info("Update check finished.")
         self.finished.emit()
 

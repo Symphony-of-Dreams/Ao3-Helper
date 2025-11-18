@@ -17,10 +17,6 @@ def temp_config_file(tmp_path):
 
     yield config_path
 
-    import importlib
-
-    importlib.reload(config_manager)
-
 
 def test_config_manager_creates_file_with_defaults(temp_config_file):
     """

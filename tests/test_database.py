@@ -1,13 +1,21 @@
 from ao3_helper import constants as const
 from ao3_helper.core.database import (
     add_fic,
+    assign_tag_to_fic,
     calculate_base_stats,
+    create_user_tag,
     delete_fic,
+    delete_user_tag,
     get_activity_by_month,
+    get_all_user_tags,
+    get_fic_by_url,
     get_filtered_fics,
+    get_tags_for_fic,
+    remove_tag_from_fic,
     update_fic_status,
 )
-from ao3_helper.core.models import Fic
+from ao3_helper.core.domain import FicDTO
+from ao3_helper.core.models import Author, Fandom, Fic, FicAuthor
 
 BASE_FIC_DATA = {
     "url": "https://archiveofourown.org/works/12345",
@@ -40,12 +48,41 @@ BASE_FIC_DATA = {
 }
 
 
+def test_add_fic_populates_relational_tables(db_connection):
+    """
+    Verifica critica Fase 2: salvare un DTO deve popolare le tabelle normalizzate.
+    """
+    dto = FicDTO(
+        url="http://test",
+        work_id=1,
+        title="Relational Fic",
+        authors=["Jane Doe", "John Smith"],
+        fandoms=["Star Wars"],
+        tags=["Force"],
+    )
+
+    success, msg = add_fic(dto)
+    assert success is True
+
+    fic = Fic.get(Fic.url == "http://test")
+    assert fic.author == "Jane Doe, John Smith"
+
+    assert Author.select().count() == 2
+    assert Fandom.select().count() == 1
+
+    jane = Author.get(Author.name == "Jane Doe")
+    john = Author.get(Author.name == "John Smith")
+
+    assert FicAuthor.select().where(FicAuthor.fic == fic, FicAuthor.author == jane).exists()
+    assert FicAuthor.select().where(FicAuthor.fic == fic, FicAuthor.author == john).exists()
+
+
 def test_add_and_get_fic(db_connection):
     """
     Verifica che possiamo aggiungere una fic e poi recuperarla.
     """
 
-    Fic.create(**BASE_FIC_DATA)
+    Fic.create(**BASE_FIC_DATA, is_in_library=True)
 
     all_fics = get_filtered_fics()
     assert len(all_fics) == 1
@@ -60,8 +97,8 @@ def test_add_fic_prevents_duplicates(db_connection):
     """
     Verifica che add_fic ritorni False se si tenta di inserire una fic con la stessa URL.
     """
-    assert add_fic(BASE_FIC_DATA) is True
-    assert add_fic(BASE_FIC_DATA) is False
+    assert add_fic(BASE_FIC_DATA) == (True, "created")
+    assert add_fic(BASE_FIC_DATA) == (False, "exists")
     assert len(get_filtered_fics()) == 1
 
 
@@ -194,3 +231,99 @@ def test_get_activity_by_month(db_connection):
     result = get_activity_by_month(view_filter="library", date_field="last_visit_date")
 
     assert ("2025-01", 1) not in result
+
+
+def test_get_fic_by_url(db_connection):
+    """
+    Verifica che get_fic_by_url recuperi i dati corretti e gestisca i casi non trovati.
+    """
+    Fic.create(**BASE_FIC_DATA, is_in_library=True)
+
+    fic = get_fic_by_url(BASE_FIC_DATA["url"])
+    assert fic is not None
+    assert fic["title"] == BASE_FIC_DATA["title"]
+
+    fic_none = get_fic_by_url("http://non.existent.url")
+    assert fic_none is None
+
+
+FIC_URL_TAGS = "https://archiveofourown.org/works/1"
+FIC_DATA_TAGS = {"url": FIC_URL_TAGS, "title": "Test Fic for Tags", "author": "Test Author"}
+
+
+def test_create_and_get_tags(db_connection):
+    """
+    Verifica che possiamo creare nuovi tag e recuperarli tutti.
+    """
+    tag1_id = create_user_tag("Da rileggere")
+    tag2_id = create_user_tag("Preferiti del 2025")
+
+    assert tag1_id is not None
+    assert tag2_id is not None
+    assert tag1_id != tag2_id
+
+    duplicate_id = create_user_tag("Da rileggere")
+    assert duplicate_id is None, "La creazione di un tag duplicato dovrebbe ritornare None."
+
+    all_tags = get_all_user_tags()
+    assert len(all_tags) == 2
+    assert (tag1_id, "Da rileggere") in all_tags
+    assert (tag2_id, "Preferiti del 2025") in all_tags
+
+
+def test_assign_and_get_tags_for_fic(db_connection):
+    """
+    Verifica che possiamo assegnare tag a una fic e recuperarli.
+    """
+    add_fic(FIC_DATA_TAGS)
+    tag1_id = create_user_tag("Angst")
+    tag2_id = create_user_tag("Fluff")
+    create_user_tag("Irrilevante")
+
+    assign_tag_to_fic(FIC_URL_TAGS, tag1_id)
+    assign_tag_to_fic(FIC_URL_TAGS, tag2_id)
+
+    fic_tags = get_tags_for_fic(FIC_URL_TAGS)
+    assert len(fic_tags) == 2
+    assert (tag1_id, "Angst") in fic_tags
+    assert (tag2_id, "Fluff") in fic_tags
+
+
+def test_remove_tag_from_fic(db_connection):
+    """
+    Verifica che possiamo rimuovere un'associazione tra fic e tag.
+    """
+    add_fic(FIC_DATA_TAGS)
+    tag_id = create_user_tag("Da rimuovere")
+    assign_tag_to_fic(FIC_URL_TAGS, tag_id)
+    assert len(get_tags_for_fic(FIC_URL_TAGS)) == 1
+
+    remove_tag_from_fic(FIC_URL_TAGS, tag_id)
+    assert len(get_tags_for_fic(FIC_URL_TAGS)) == 0
+
+
+def test_delete_tag_cascades_to_fic_tags(db_connection):
+    """
+    Verifica che la cancellazione di un tag rimuova le associazioni.
+    """
+    add_fic(FIC_DATA_TAGS)
+    fic2_url = "https://archiveofourown.org/works/2"
+    add_fic({"url": fic2_url, "title": "Fic 2", "author": "Author 2"})
+
+    tag_to_delete_id = create_user_tag("Temporaneo")
+    tag_to_keep_id = create_user_tag("Permanente")
+
+    assign_tag_to_fic(FIC_URL_TAGS, tag_to_delete_id)
+    assign_tag_to_fic(fic2_url, tag_to_delete_id)
+    assign_tag_to_fic(FIC_URL_TAGS, tag_to_keep_id)
+
+    assert len(get_tags_for_fic(FIC_URL_TAGS)) == 2
+    assert len(get_tags_for_fic(fic2_url)) == 1
+
+    delete_user_tag(tag_to_delete_id)
+
+    assert len(get_all_user_tags()) == 1, "Il tag 'Temporaneo' dovrebbe essere stato cancellato."
+    fic1_tags = get_tags_for_fic(FIC_URL_TAGS)
+    assert len(fic1_tags) == 1
+    assert fic1_tags[0][1] == "Permanente"
+    assert len(get_tags_for_fic(fic2_url)) == 0

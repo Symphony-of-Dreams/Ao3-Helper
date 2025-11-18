@@ -1,7 +1,7 @@
-import logging  # noqa: F401
 import operator
 import os
 import sqlite3
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -10,7 +10,27 @@ from peewee import JOIN, fn
 from playhouse.shortcuts import model_to_dict
 
 from ao3_helper import constants as const
-from ao3_helper.core.models import Achievement, Fic, FicTag, Notification, SavedFilter, UserTag, db
+from ao3_helper.core.models import (
+    Achievement,
+    Author,
+    Category,
+    Character,
+    ContentTag,
+    Fandom,
+    Fic,
+    FicAuthor,
+    FicCategory,
+    FicCharacter,
+    FicContentTag,
+    FicFandom,
+    FicRelationship,
+    FicTag,
+    Notification,
+    Relationship,
+    SavedFilter,
+    UserTag,
+    db,
+)
 from ao3_helper.logger_setup import logger
 
 
@@ -28,111 +48,101 @@ def get_db_path_for_user(username: str) -> str:
 
 def run_database_migrations(db_path: str) -> None:
     """
-    Ensures the database schema is up to date.
-    - For new databases, creates the full, modern schema using the ORM.
-    - For existing databases, applies manual migrations to add columns.
+    Assicura che lo schema del database sia aggiornato.
+    1. Crea le nuove tabelle relazionali (Fase 2) se non esistono.
+    2. Applica le vecchie migrazioni manuali (colonne legacy) se il DB è vecchio.
     """
-    from ao3_helper.core.models import (
-        Achievement,
-        Fic,
-        FicTag,
-        Notification,
-        SavedFilter,
-        UserTag,
-        db,
-    )
-
     try:
 
         db.connect(reuse_if_open=True)
 
-        if not db.table_exists("fics"):
-            logger.warning("Database file not found or is empty. Creating new schema from models...")
+        all_models = [
+            Fic,
+            UserTag,
+            FicTag,
+            Notification,
+            Achievement,
+            SavedFilter,
+            Author,
+            Fandom,
+            Character,
+            Relationship,
+            ContentTag,
+            Category,
+            FicAuthor,
+            FicFandom,
+            FicCharacter,
+            FicRelationship,
+            FicContentTag,
+            FicCategory,
+        ]
 
-            db.create_tables([Fic, UserTag, FicTag, Notification, Achievement, SavedFilter])
+        db.create_tables(all_models, safe=True)
 
-            db.execute_sql(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
-            logger.info("New database schema created successfully.")
-        else:
+        logger.info("Database tables verification complete (V2 relational schema checked).")
 
+        if os.path.exists(db_path):
             with sqlite3.connect(db_path) as conn:
                 c = conn.cursor()
-                current_version = c.execute("PRAGMA user_version").fetchone()[0]
-                logger.info(f"DB version: Current is v{current_version}, Latest is v{const.LATEST_DB_VERSION}.")
+
+                try:
+                    current_version = c.execute("PRAGMA user_version").fetchone()[0]
+                except TypeError:
+                    current_version = 0
+
+                logger.info(
+                    f"Checking legacy migrations. DB Version: {current_version} -> Target: {const.LATEST_DB_VERSION}"
+                )
 
                 if current_version < const.LATEST_DB_VERSION:
-                    logger.warning(f"DB schema is outdated. Applying incremental migrations from v{current_version}...")
 
                     if current_version < 3:
-                        logger.info("Applying migration to v3: Adding data columns...")
-                        try:
-                            columns_to_add = {
-                                "series_name": "TEXT",
-                                "series_url": "TEXT",
-                                "series_part": "INTEGER",
-                                "chapters": "TEXT",
-                                "date_published": "TEXT",
-                                "date_updated": "TEXT",
-                                "source": "TEXT DEFAULT 'manual'",
-                                "last_read_date": "TEXT",
-                                "visit_count": "INTEGER",
-                                "language": "TEXT",
-                                "hits": "INTEGER",
-                                "kudos": "INTEGER",
-                                "bookmarks": "INTEGER",
-                                "comments": "INTEGER",
-                            }
-                            for col_name, col_type in columns_to_add.items():
-                                try:
-                                    c.execute(f"ALTER TABLE fics ADD COLUMN {col_name} {col_type}")
-                                except sqlite3.OperationalError:
-                                    logger.debug(f"Column {col_name} likely already exists.")
-                            logger.info("Successfully applied v3 schema changes.")
-                        except Exception as e:
-                            logger.error(f"Failed during v3 migration: {e}")
+                        columns_v3 = {
+                            "series_name": "TEXT",
+                            "series_url": "TEXT",
+                            "series_part": "INTEGER",
+                            "chapters": "TEXT",
+                            "date_published": "TEXT",
+                            "date_updated": "TEXT",
+                            "source": "TEXT DEFAULT 'manual'",
+                            "language": "TEXT",
+                            "hits": "INTEGER",
+                            "kudos": "INTEGER",
+                            "bookmarks": "INTEGER",
+                            "comments": "INTEGER",
+                        }
+                        for col, dtype in columns_v3.items():
+                            try:
+                                c.execute(f"ALTER TABLE fics ADD COLUMN {col} {dtype}")
+                            except sqlite3.OperationalError:
+                                pass
 
                     if current_version < 4:
-                        logger.info("Applying migration to v4: Adding history/library flags...")
-                        try:
-
-                            c.execute("ALTER TABLE fics ADD COLUMN is_in_library INTEGER DEFAULT 1")
-                            c.execute("ALTER TABLE fics ADD COLUMN is_in_history INTEGER DEFAULT 0")
-                            c.execute("ALTER TABLE fics ADD COLUMN last_visit_date TEXT")
-                            c.execute("ALTER TABLE fics ADD COLUMN visit_count INTEGER")
-                            logger.info("Successfully added all columns for v4.")
-                        except sqlite3.OperationalError:
-                            logger.debug("Columns for v4 likely already exist.")
+                        cols_v4 = [
+                            "is_in_library INTEGER DEFAULT 1",
+                            "is_in_history INTEGER DEFAULT 0",
+                            "last_visit_date TEXT",
+                            "visit_count INTEGER",
+                        ]
+                        for col_def in cols_v4:
+                            try:
+                                c.execute(f"ALTER TABLE fics ADD COLUMN {col_def}")
+                            except sqlite3.OperationalError:
+                                pass
 
                     if current_version < 5:
-                        logger.info("Applying migration to v5: Adding Reading Queue columns...")
-                        try:
-                            c.execute("ALTER TABLE fics ADD COLUMN is_in_reading_queue INTEGER DEFAULT 0")
-                            c.execute("ALTER TABLE fics ADD COLUMN queue_order INTEGER")
-                            logger.info("Successfully added columns for v5.")
-                        except sqlite3.OperationalError:
-                            logger.debug("Columns for v5 likely already exist.")
-
-                    if current_version < 6:
-                        logger.info("Applying migration to v6: Creating saved_filters table...")
-                        try:
-                            c.execute(
-                                """
-                                CREATE TABLE saved_filters (
-                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                    name TEXT NOT NULL UNIQUE,
-                                    filter_data TEXT NOT NULL
-                                )
-                            """
-                            )
-                            logger.info("Successfully created table for v6.")
-                        except sqlite3.OperationalError:
-                            logger.debug("Table 'saved_filters' likely already exists.")
+                        cols_v5 = ["is_in_reading_queue INTEGER DEFAULT 0", "queue_order INTEGER"]
+                        for col_def in cols_v5:
+                            try:
+                                c.execute(f"ALTER TABLE fics ADD COLUMN {col_def}")
+                            except sqlite3.OperationalError:
+                                pass
 
                     c.execute(f"PRAGMA user_version = {const.LATEST_DB_VERSION}")
                     logger.info("Database migration successful.")
                 else:
                     logger.info("Database schema is up to date.")
-
+        _migrate_legacy_data_to_v2()
     except Exception as e:
         logger.exception(f"A critical error occurred during database setup/migration: {e}")
         raise
@@ -141,14 +151,110 @@ def run_database_migrations(db_path: str) -> None:
             db.close()
 
 
-def add_fic(fic_details: Dict[str, Any]) -> Tuple[bool, str]:
+def _migrate_legacy_data_to_v2() -> None:
+    """
+    Versione robusta: Controlla lo stato dei dati e migra se necessario.
+    """
+    try:
+        logger.info("--- CONTROLLO STATO MIGRAZIONE DATI V2 ---")
+
+        fic_count = Fic.select().count()
+
+        v2_count = FicAuthor.select().count()
+
+        logger.info(f"Diagnostica DB: {fic_count} Fics totali | {v2_count} Relazioni Autore (V2)")
+
+        if fic_count > 0 and v2_count < fic_count:
+            logger.warning(f"!!! RILEVATO SCHEMA V2 INCOMPLETO ({v2_count}/{fic_count}) !!! Avvio backfilling...")
+
+            all_fics = Fic.select()
+            count = 0
+
+            with db.atomic():
+                for fic in all_fics.iterator():
+                    fic_data = model_to_dict(fic)
+
+                    _sync_fic_relations(fic, fic_data)
+
+                    count += 1
+                    if count % 50 == 0:
+                        logger.info(f"Backfilling in corso: elaborate {count}/{fic_count}...")
+
+            logger.info(f"✅ Migrazione V2 completata! {count} fics processate.")
+        else:
+            logger.info("✅ Schema V2 già allineato. Nessuna migrazione necessaria.")
+
+    except Exception as e:
+        logger.exception(f"Errore critico durante la migrazione dati V2: {e}")
+
+
+def _sync_fic_relations(fic_instance: Fic, fic_data: Dict[str, Any]) -> None:
+    """
+    Helper function to populate the normalized Many-to-Many tables (Phase 2).
+    It handles Authors, Fandoms, Tags, Relationships, Characters, Categories.
+    """
+    try:
+
+        relations_map = [
+            ("authors", Author, FicAuthor, "author"),
+            ("fandoms", Fandom, FicFandom, "fandom"),
+            ("tags", ContentTag, FicContentTag, "tag"),
+            ("relationships", Relationship, FicRelationship, "relationship"),
+            ("characters", Character, FicCharacter, "character"),
+            ("categories", Category, FicCategory, "category"),
+        ]
+
+        for key, EntityModel, JunctionModel, junction_field_name in relations_map:
+            items = fic_data.get(key)
+
+            if not items:
+                legacy_key = key[:-1] if key.endswith("s") else key
+                if key == "categories":
+                    legacy_key = "category"
+                items = fic_data.get(legacy_key)
+
+            if isinstance(items, str):
+                items = [x.strip() for x in items.split(",") if x.strip()]
+
+            if not items or not isinstance(items, list):
+                continue
+
+            for item_name in items:
+                if not item_name or not isinstance(item_name, str):
+                    continue
+
+                entity, _ = EntityModel.get_or_create(name=item_name)
+                junction_kwargs = {"fic": fic_instance, junction_field_name: entity}
+                JunctionModel.get_or_create(**junction_kwargs)
+
+    except Exception as e:
+        logger.error(f"Failed to sync relations for fic {fic_instance.title}: {e}")
+
+
+def add_fic(fic_details: Any) -> Tuple[bool, str]:
     """
     Adds a new fic to the database using the Peewee ORM.
-    Handles mapping from the input dictionary to the Fic model.
-
-    Returns:
-        A tuple (success, reason), e.g., (True, "created"), (False, "exists"), (False, "error")
+    Accepts either a Dictionary (legacy) or FicDTO (new).
+    Populates both Legacy Columns and New Relational Tables.
     """
+
+    if is_dataclass(fic_details):
+        dto = fic_details
+        fic_details = asdict(dto)
+
+        fic_details["author"] = ", ".join(dto.authors)
+        fic_details["fandoms"] = ", ".join(dto.fandoms)
+        fic_details["tags"] = ", ".join(dto.tags)
+        fic_details["relationships"] = ", ".join(dto.relationships)
+        fic_details["characters"] = ", ".join(dto.characters)
+        fic_details["category"] = ", ".join(dto.categories)
+
+        total = str(dto.expected_chapters) if dto.expected_chapters else "?"
+        fic_details["chapters"] = f"{dto.chapter_count}/{total}"
+
+        if not fic_details.get("source"):
+            fic_details["source"] = "manual"
+
     try:
 
         fic_data_for_model = {
@@ -184,7 +290,10 @@ def add_fic(fic_details: Dict[str, Any]) -> Tuple[bool, str]:
             "status_verified": False,
         }
 
-        Fic.create(**fic_data_for_model)
+        new_fic = Fic.create(**fic_data_for_model)
+
+        _sync_fic_relations(new_fic, fic_details)
+
         logger.info(f"Successfully added fic '{fic_data_for_model['title']}' using Peewee ORM.")
         return True, "created"
 
@@ -199,22 +308,13 @@ def add_fic(fic_details: Dict[str, Any]) -> Tuple[bool, str]:
 def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, Optional[Fic]]:
     """
     Adds a new fic from the history or updates an existing one with history data.
-
-    Args:
-        fic_details: A dictionary containing all fic data, including history info.
-
-    Returns:
-        A tuple (created, updated):
-        - (True, False) if a new fic was created.
-        - (False, True) if an existing fic was updated.
-        - (False, False) on error or if no action was taken.
+    Populates relational tables on creation.
     """
     fic_url = fic_details.get("url")
     if not fic_url:
         return (False, None)
 
     try:
-
         existing_fic = Fic.get_or_none(Fic.url == fic_url)
 
         if existing_fic:
@@ -269,7 +369,11 @@ def add_or_update_fic_from_history(fic_details: Dict[str, Any]) -> Tuple[bool, O
                 "user_rating": 0,
                 "status_verified": False,
             }
+
             new_fic = Fic.create(**fic_data_for_model)
+
+            _sync_fic_relations(new_fic, fic_details)
+
             logger.info(f"Created new fic '{fic_data_for_model['title']}' from history.")
             return (True, new_fic)
 
@@ -551,7 +655,7 @@ def assign_tag_to_fic(fic_url: str, tag_id: int) -> None:
     """Associates a tag with a fic in the junction table using Peewee."""
     try:
 
-        FicTag.create(fic=fic_url, tag=tag_id)
+        FicTag.get_or_create(fic=fic_url, tag=tag_id)
     except Exception as e:
         logger.exception(f"Failed to assign tag_id {tag_id} to fic {fic_url} using ORM: {e}")
 

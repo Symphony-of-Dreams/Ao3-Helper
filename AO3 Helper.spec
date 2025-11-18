@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 from PyInstaller.utils.hooks import get_module_file_attribute
 import os
 
@@ -18,11 +17,22 @@ a = Analysis(
     binaries=[],
     
     datas=[
-        (numpy_basedir, 'numpy'),
-        
+        (numpy_basedir, 'numpy'), 
         ('assets', 'assets') 
     ],
-    hiddenimports=[],
+    
+    
+    hiddenimports=[
+        
+        'playhouse.sqlite_ext', 
+        
+        # Necessari per SecurityManager (gestione password sicura)
+        'keyring.backends',
+        'keyring.backends.Windows', 
+        'win32ctypes.core',         
+    ],
+    
+    
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -32,6 +42,7 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
@@ -52,6 +63,7 @@ exe = EXE(
     entitlements_file=None,
     icon=os.path.join('assets', 'app_icon.ico')
 )
+
 coll = COLLECT(
     exe,
     a.binaries,

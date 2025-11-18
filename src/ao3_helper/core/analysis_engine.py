@@ -140,17 +140,7 @@ class AnalysisEngine:
         return final_analysis
 
     def generate_recommendations(self, fics_to_consider: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Calculates a 'recommendation score' for a list of candidate fics based on
-        the pre-calculated TWS scores of their associated entities.
 
-        Args:
-            fics_to_consider: A list of fic dictionaries (e.g., all 'To Read' fics).
-
-        Returns:
-            A new list of fic dictionaries, each augmented with a 'recommendation_score',
-            sorted from highest to lowest score.
-        """
         recommendations = []
 
         entity_mappings = [
@@ -165,14 +155,22 @@ class AnalysisEngine:
             recommendation_score = 0.0
 
             for fic_key, score_cache in entity_mappings:
-                entity_string = fic.get(fic_key)
+                raw_val = fic.get(fic_key)
 
-                if entity_string:
+                if raw_val is None and fic_key == "author":
+                    raw_val = fic.get("authors")
 
-                    items = [item.strip() for item in entity_string.split(",") if item.strip()]
+                items = []
 
-                    for item_name in items:
+                if isinstance(raw_val, list):
 
+                    items = raw_val
+                elif isinstance(raw_val, str) and raw_val:
+
+                    items = [item.strip() for item in raw_val.split(",") if item.strip()]
+
+                for item_name in items:
+                    if item_name:
                         score_data = score_cache.get(item_name, {"tws": 0.0})
                         recommendation_score += score_data["tws"]
 
